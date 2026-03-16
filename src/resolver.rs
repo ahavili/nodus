@@ -4,7 +4,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use semver::Version;
 use sha2::{Digest, Sha256};
 
 use crate::adapters::{Adapter, Adapters, ManagedFile, build_output_plan};
@@ -572,12 +571,12 @@ impl Resolution {
                         .manifest
                         .effective_version()
                         .map(|v| v.to_string())
-                        .or_else(|| tag.as_deref().map(normalize_version_tag)),
+                        .or_else(|| tag.clone()),
                     PackageSource::Path { tag, .. } => package
                         .manifest
                         .effective_version()
                         .map(|v| v.to_string())
-                        .or_else(|| tag.as_deref().map(normalize_version_tag)),
+                        .or_else(|| tag.clone()),
                     PackageSource::Root => {
                         package.manifest.effective_version().map(|v| v.to_string())
                     }
@@ -651,23 +650,6 @@ fn sorted_ids<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {
     let mut ids: Vec<_> = ids.cloned().collect();
     ids.sort();
     ids
-}
-
-fn normalize_version_tag(value: &str) -> String {
-    let trimmed = value.trim();
-    if let Some(normalized) = parse_semver_like(trimmed) {
-        normalized.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn parse_semver_like(value: &str) -> Option<Version> {
-    Version::parse(value).ok().or_else(|| {
-        value
-            .strip_prefix('v')
-            .and_then(|rest| Version::parse(rest).ok())
-    })
 }
 
 impl ResolvedPackage {
@@ -1122,7 +1104,7 @@ shared = { path = "vendor/shared" }
             .iter()
             .find(|package| package.alias != "root")
             .unwrap();
-        assert_eq!(dependency_package.version_tag.as_deref(), Some("0.1.0"));
+        assert_eq!(dependency_package.version_tag.as_deref(), Some("v0.1.0"));
 
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
         let dependency = resolution
