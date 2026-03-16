@@ -6,7 +6,7 @@ REPO_SLUG="WendellXY/nodus"
 BIN_NAME="nodus"
 INSTALL_DIR="${NODUS_INSTALL_DIR:-$HOME/.local/bin}"
 REQUESTED_VERSION="${NODUS_VERSION:-}"
-VERIFY_CHECKSUMS=1
+VERIFY_CHECKSUMS=0
 MODE="install"
 TEMP_DIR=""
 
@@ -15,13 +15,13 @@ usage() {
 Install nodus from GitHub release assets.
 
 Usage:
-  ./install.sh [--version <tag>] [--install-dir <path>] [--no-verify]
+  ./install.sh [--version <tag>] [--install-dir <path>] [--verify]
   ./install.sh --uninstall [--install-dir <path>]
 
 Options:
   --version <tag>       Install a specific release tag, for example v0.1.0.
   --install-dir <path>  Install the binary into this directory.
-  --no-verify           Skip SHA-256 checksum verification.
+  --verify              Verify the downloaded archive with a release checksum when available.
   --uninstall           Remove the installed binary from the install directory.
   -h, --help            Show this help text.
 
@@ -57,8 +57,8 @@ parse_args() {
         INSTALL_DIR="$2"
         shift 2
         ;;
-      --no-verify)
-        VERIFY_CHECKSUMS=0
+      --verify)
+        VERIFY_CHECKSUMS=1
         shift
         ;;
       --uninstall)

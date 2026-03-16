@@ -60,6 +60,12 @@ curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/ins
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/install.sh | bash -s -- --install-dir /usr/local/bin
 ```
 
+Verify the downloaded archive when the release includes checksum assets:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/install.sh | bash -s -- --verify
+```
+
 Uninstall from the default or a custom install directory:
 
 ```bash
@@ -67,7 +73,7 @@ curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/ins
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/refs/heads/main/install.sh | bash -s -- --uninstall --install-dir /usr/local/bin
 ```
 
-You can also download a prebuilt binary archive and its `.sha256` file from the GitHub release assets for your platform, then run the root-level `install.sh` locally.
+You can also download a prebuilt binary archive from the GitHub release assets for your platform, then run the root-level `install.sh` locally.
 
 Build or install from the current checkout:
 
