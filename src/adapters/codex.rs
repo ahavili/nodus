@@ -4,48 +4,70 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::adapters::{ManagedFile, namespaced_skill_id};
+use crate::manifest::{FileEntry, SkillEntry};
 use crate::resolver::ResolvedPackage;
 
-pub fn managed_files(
+pub fn skill_files(
     project_root: &Path,
     package: &ResolvedPackage,
     snapshot_root: &Path,
+    skill: &SkillEntry,
 ) -> Result<Vec<ManagedFile>> {
+    copy_directory(
+        project_root
+            .join(".codex/skills")
+            .join(namespaced_skill_id(package, &skill.id)),
+        snapshot_root.join(&skill.path),
+    )
+}
+
+pub fn rule_file(
+    project_root: &Path,
+    snapshot_root: &Path,
+    rule: &FileEntry,
+) -> Result<ManagedFile> {
+    copy_file(
+        project_root
+            .join(".codex/rules")
+            .join(format!("{}.rules", rule.id)),
+        snapshot_root.join(&rule.path),
+    )
+}
+
+fn copy_directory(
+    target_root: impl AsRef<Path>,
+    source_root: impl AsRef<Path>,
+) -> Result<Vec<ManagedFile>> {
+    let target_root = target_root.as_ref();
+    let source_root = source_root.as_ref();
     let mut files = Vec::new();
 
-    for skill in &package.manifest.discovered.skills {
-        let source_root = snapshot_root.join(&skill.path);
-        for entry in walkdir::WalkDir::new(&source_root) {
-            let entry = entry?;
-            if entry.file_type().is_file() {
-                let relative = entry.path().strip_prefix(&source_root).with_context(|| {
-                    format!("failed to make {} relative", entry.path().display())
-                })?;
-                files.push(ManagedFile {
-                    path: project_root
-                        .join(".codex/skills")
-                        .join(namespaced_skill_id(package, &skill.id))
-                        .join(relative),
-                    contents: fs::read(entry.path()).with_context(|| {
-                        format!("failed to read snapshot file {}", entry.path().display())
-                    })?,
-                });
-            }
+    for entry in walkdir::WalkDir::new(source_root) {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            let relative = entry
+                .path()
+                .strip_prefix(source_root)
+                .with_context(|| format!("failed to make {} relative", entry.path().display()))?;
+            files.push(ManagedFile {
+                path: target_root.join(relative),
+                contents: fs::read(entry.path()).with_context(|| {
+                    format!("failed to read snapshot file {}", entry.path().display())
+                })?,
+            });
         }
-    }
-
-    for rule in &package.manifest.discovered.rules {
-        let source_path = snapshot_root.join(&rule.path);
-        files.push(ManagedFile {
-            path: project_root
-                .join(".codex/rules")
-                .join(format!("{}.rules", rule.id)),
-            contents: fs::read(&source_path).with_context(|| {
-                format!("failed to read snapshot file {}", source_path.display())
-            })?,
-        });
     }
 
     files.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(files)
+}
+
+fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Result<ManagedFile> {
+    let target_path = target_path.as_ref();
+    let source_path = source_path.as_ref();
+    Ok(ManagedFile {
+        path: target_path.to_path_buf(),
+        contents: fs::read(source_path)
+            .with_context(|| format!("failed to read snapshot file {}", source_path.display()))?,
+    })
 }

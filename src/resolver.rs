@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
-use crate::adapters::{ManagedFile, build_managed_files, namespaced_skill_id};
+use crate::adapters::{ManagedFile, build_output_plan};
 use crate::git::{
     current_rev, ensure_git_dependency, shared_checkout_path, shared_repository_path,
     validate_shared_checkout,
@@ -102,8 +102,9 @@ pub fn sync_in_dir(
             Ok((package.clone(), snapshot_root))
         })
         .collect::<Result<Vec<_>>>()?;
-    let planned_files = build_managed_files(cwd, &package_snapshots)?;
-    let desired_paths = resolution.managed_paths(cwd);
+    let output_plan = build_output_plan(cwd, &package_snapshots)?;
+    let planned_files = &output_plan.files;
+    let desired_paths = resolution.managed_paths(cwd)?;
     let lockfile = resolution.to_lockfile()?;
     let owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
 
@@ -123,15 +124,19 @@ pub fn sync_in_dir(
         }
     }
 
-    validate_collisions(&planned_files, &owned_paths)?;
+    validate_collisions(planned_files, &owned_paths)?;
     prune_stale_files(&owned_paths, &desired_paths, cwd)?;
-    write_managed_files(&planned_files)?;
+    write_managed_files(planned_files)?;
 
     if !locked {
         lockfile.write(&lockfile_path)?;
     }
 
-    for warning in &resolution.warnings {
+    for warning in resolution
+        .warnings
+        .iter()
+        .chain(output_plan.warnings.iter())
+    {
         eprintln!("warning: {warning}");
     }
 
@@ -161,16 +166,17 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path) -> Result<()> {
         .iter()
         .map(|package| (package.clone(), package.root.clone()))
         .collect::<Vec<_>>();
-    let planned_files = build_managed_files(cwd, &package_roots)?;
-    let desired_paths = resolution.managed_paths(cwd);
+    let output_plan = build_output_plan(cwd, &package_roots)?;
+    let planned_files = &output_plan.files;
+    let desired_paths = resolution.managed_paths(cwd)?;
     let expected_lockfile = resolution.to_lockfile()?;
     if existing_lockfile != expected_lockfile {
         bail!("{LOCKFILE_NAME} is out of date");
     }
     let owned_paths = load_owned_paths(cwd, Some(&existing_lockfile))?;
 
-    validate_collisions(&planned_files, &owned_paths)?;
-    validate_state_consistency(&owned_paths, &desired_paths, &planned_files)?;
+    validate_collisions(planned_files, &owned_paths)?;
+    validate_state_consistency(&owned_paths, &desired_paths, planned_files)?;
 
     for package in &resolution.packages {
         if let PackageSource::Git { url, rev, .. } = &package.source {
@@ -198,7 +204,11 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path) -> Result<()> {
         }
     }
 
-    for warning in &resolution.warnings {
+    for warning in resolution
+        .warnings
+        .iter()
+        .chain(output_plan.warnings.iter())
+    {
         eprintln!("warning: {warning}");
     }
 
@@ -461,70 +471,21 @@ impl Resolution {
             });
         }
 
-        Ok(Lockfile::new(packages, self.lockfile_managed_files()))
+        Ok(Lockfile::new(packages, self.lockfile_managed_files()?))
     }
 
-    pub fn managed_paths(&self, project_root: &Path) -> HashSet<PathBuf> {
-        let mut managed_paths = HashSet::new();
-        let mut has_opencode = false;
-
-        for package in &self.packages {
-            for skill in &package.manifest.discovered.skills {
-                let namespaced = namespaced_skill_id(package, &skill.id);
-                managed_paths.insert(project_root.join(".claude/skills").join(&namespaced));
-                managed_paths.insert(project_root.join(".codex/skills").join(namespaced));
-            }
-
-            for rule in &package.manifest.discovered.rules {
-                managed_paths.insert(
-                    project_root
-                        .join(".codex/rules")
-                        .join(format!("{}.rules", rule.id)),
-                );
-            }
-
-            for agent in &package.manifest.discovered.agents {
-                has_opencode = true;
-                managed_paths.insert(
-                    project_root
-                        .join(".opencode/instructions")
-                        .join(format!("{}.md", agent.id)),
-                );
-            }
-        }
-
-        if has_opencode {
-            managed_paths.insert(project_root.join("opencode.json"));
-        }
-
-        managed_paths
+    pub fn managed_paths(&self, project_root: &Path) -> Result<HashSet<PathBuf>> {
+        let lockfile = self.to_lockfile()?;
+        lockfile.managed_paths(project_root)
     }
 
-    fn lockfile_managed_files(&self) -> Vec<String> {
-        let mut managed_files = Vec::new();
-        let mut has_opencode = false;
-
-        for package in &self.packages {
-            for skill in &package.manifest.discovered.skills {
-                managed_files.push(format!(".claude/skills/{}", skill.id));
-                managed_files.push(format!(".codex/skills/{}", skill.id));
-            }
-
-            for rule in &package.manifest.discovered.rules {
-                managed_files.push(format!(".codex/rules/{}.rules", rule.id));
-            }
-
-            for agent in &package.manifest.discovered.agents {
-                has_opencode = true;
-                managed_files.push(format!(".opencode/instructions/{}.md", agent.id));
-            }
-        }
-
-        if has_opencode {
-            managed_files.push("opencode.json".into());
-        }
-
-        managed_files
+    fn lockfile_managed_files(&self) -> Result<Vec<String>> {
+        let package_roots = self
+            .packages
+            .iter()
+            .map(|package| (package.clone(), package.root.clone()))
+            .collect::<Vec<_>>();
+        Ok(build_output_plan(&self.project_root, &package_roots)?.managed_files)
     }
 }
 
@@ -983,6 +944,7 @@ shared = { path = "vendor/shared" }
         write_skill(&temp.path().join("skills/review"), "Review");
         write_file(&temp.path().join("agents/security.md"), "# Security\n");
         write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
+        write_file(&temp.path().join("commands/build.txt"), "cargo test\n");
         write_file(&temp.path().join("AGENTS.md"), "user-owned instructions\n");
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
         let root_package = resolution
@@ -1004,12 +966,33 @@ shared = { path = "vendor/shared" }
                 .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
+        assert!(temp.path().join(".claude/agents/security.md").exists());
+        assert!(temp.path().join(".claude/commands/build.md").exists());
+        assert!(temp.path().join(".claude/rules/default.md").exists());
+        assert!(temp.path().join("CLAUDE.md").exists());
         assert!(temp.path().join(".codex/rules/default.rules").exists());
         assert!(
             temp.path()
-                .join(".opencode/instructions/security.md")
+                .join(".opencode/skills/review/SKILL.md")
                 .exists()
         );
+        assert!(temp.path().join(".opencode/agents/security.md").exists());
+        assert!(temp.path().join(".opencode/commands/build.md").exists());
+        assert!(temp.path().join(".opencode/rules/default.md").exists());
+        assert!(temp.path().join("opencode.json").exists());
+        assert!(
+            fs::read_to_string(temp.path().join(".opencode/skills/review/SKILL.md"))
+                .unwrap()
+                .contains("name: review")
+        );
+        assert!(
+            fs::read_to_string(temp.path().join("CLAUDE.md"))
+                .unwrap()
+                .contains("@.claude/rules/default.md")
+        );
+        let opencode_config = fs::read_to_string(temp.path().join("opencode.json")).unwrap();
+        assert!(opencode_config.contains(".opencode/agents/security.md"));
+        assert!(opencode_config.contains(".opencode/rules/default.md"));
         assert_eq!(
             fs::read_to_string(temp.path().join("AGENTS.md")).unwrap(),
             "user-owned instructions\n"
@@ -1035,6 +1018,11 @@ shared = { path = "vendor/shared" }
             lockfile
                 .managed_files
                 .contains(&".codex/skills/iframe-ad".into())
+        );
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".opencode/skills/iframe-ad".into())
         );
         assert!(
             !lockfile
@@ -1111,24 +1099,74 @@ sensitivity = "high"
 
         write_skill(&temp.path().join("skills/review"), "Review");
         write_file(&temp.path().join("agents/security.md"), "# Security\n");
+        write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
+        write_file(&temp.path().join("commands/build.txt"), "cargo test\n");
 
         sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
-        assert!(
-            temp.path()
-                .join(".opencode/instructions/security.md")
-                .exists()
-        );
+        assert!(temp.path().join(".claude/agents/security.md").exists());
+        assert!(temp.path().join(".claude/commands/build.md").exists());
+        assert!(temp.path().join(".claude/rules/default.md").exists());
+        assert!(temp.path().join(".opencode/agents/security.md").exists());
+        assert!(temp.path().join(".opencode/rules/default.md").exists());
+        assert!(temp.path().join(".opencode/commands/build.md").exists());
+        assert!(temp.path().join("CLAUDE.md").exists());
+        assert!(temp.path().join("opencode.json").exists());
 
         fs::remove_file(temp.path().join("agents/security.md")).unwrap();
         fs::remove_dir(temp.path().join("agents")).unwrap();
+        fs::remove_file(temp.path().join("rules/default.rules")).unwrap();
+        fs::remove_dir(temp.path().join("rules")).unwrap();
+        fs::remove_file(temp.path().join("commands/build.txt")).unwrap();
+        fs::remove_dir(temp.path().join("commands")).unwrap();
         sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
 
-        assert!(
-            !temp
-                .path()
-                .join(".opencode/instructions/security.md")
-                .exists()
+        assert!(!temp.path().join(".claude/agents/security.md").exists());
+        assert!(!temp.path().join(".claude/commands/build.md").exists());
+        assert!(!temp.path().join(".claude/rules/default.md").exists());
+        assert!(!temp.path().join("CLAUDE.md").exists());
+        assert!(!temp.path().join(".opencode/agents/security.md").exists());
+        assert!(!temp.path().join(".opencode/rules/default.md").exists());
+        assert!(!temp.path().join(".opencode/commands/build.md").exists());
+        assert!(!temp.path().join("opencode.json").exists());
+    }
+
+    #[test]
+    fn sync_refuses_to_overwrite_unmanaged_claude_md() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_file(&temp.path().join("rules/default.rules"), "allow = []\n");
+        write_file(&temp.path().join("CLAUDE.md"), "user-owned memory\n");
+
+        let error = sync_in_dir(temp.path(), cache.path(), false, false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("refusing to overwrite unmanaged file"));
+        assert!(error.contains("CLAUDE.md"));
+    }
+
+    #[test]
+    fn sync_rejects_duplicate_opencode_skill_ids_across_packages() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
         );
+        write_file(
+            &temp.path().join("vendor/shared/skills/review/SKILL.md"),
+            "---\nname: Shared Review\ndescription: Different review skill.\n---\n# Shared Review\n",
+        );
+
+        let error = sync_in_dir(temp.path(), cache.path(), false, false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("multiple packages export OpenCode skill `review`"));
     }
 
     #[test]

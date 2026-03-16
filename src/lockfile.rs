@@ -250,6 +250,7 @@ mod tests {
             vec![
                 ".claude/skills/iframe-ad".into(),
                 ".codex/skills/iframe-ad".into(),
+                ".opencode/skills/iframe-ad".into(),
             ],
         );
 
@@ -261,5 +262,6 @@ mod tests {
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.codex/skills/iframe-ad_01f556"
         )));
+        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.opencode/skills/iframe-ad")));
     }
 }

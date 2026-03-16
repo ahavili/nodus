@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -15,11 +15,118 @@ pub struct ManagedFile {
     pub contents: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Adapter {
+    Claude,
+    Codex,
+    OpenCode,
+}
+
+impl Adapter {
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Claude => 1 << 0,
+            Self::Codex => 1 << 1,
+            Self::OpenCode => 1 << 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Adapters(u8);
+
+impl Adapters {
+    #[allow(dead_code)]
+    pub const NONE: Self = Self(0);
+    pub const CLAUDE: Self = Self(Adapter::Claude.bit());
+    pub const CODEX: Self = Self(Adapter::Codex.bit());
+    pub const OPENCODE: Self = Self(Adapter::OpenCode.bit());
+
+    pub const fn contains(self, adapter: Adapter) -> bool {
+        self.0 & adapter.bit() != 0
+    }
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    #[allow(dead_code)]
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    #[allow(dead_code)]
+    pub fn iter(self) -> impl Iterator<Item = Adapter> {
+        [Adapter::Claude, Adapter::Codex, Adapter::OpenCode]
+            .into_iter()
+            .filter(move |adapter| self.contains(*adapter))
+    }
+}
+
+impl From<Adapter> for Adapters {
+    fn from(value: Adapter) -> Self {
+        Self(value.bit())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactKind {
+    Skill,
+    Agent,
+    Rule,
+    Command,
+}
+
+impl ArtifactKind {
+    pub const fn supported_adapters(self) -> Adapters {
+        match self {
+            Self::Skill => Adapters::CLAUDE
+                .union(Adapters::CODEX)
+                .union(Adapters::OPENCODE),
+            Self::Agent => Adapters::CLAUDE.union(Adapters::OPENCODE),
+            Self::Rule => Adapters::CLAUDE
+                .union(Adapters::CODEX)
+                .union(Adapters::OPENCODE),
+            Self::Command => Adapters::CLAUDE.union(Adapters::OPENCODE),
+        }
+    }
+
+    pub const fn plural_name(self) -> &'static str {
+        match self {
+            Self::Skill => "skills",
+            Self::Agent => "agents",
+            Self::Rule => "rules",
+            Self::Command => "commands",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct OutputPlan {
+    pub files: Vec<ManagedFile>,
+    pub managed_files: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct OutputAccumulator {
+    files: BTreeMap<PathBuf, Vec<u8>>,
+    managed_files: BTreeSet<String>,
+    warnings: Vec<String>,
+    claude_rule_imports: BTreeSet<String>,
+    opencode_instructions: BTreeSet<String>,
+    opencode_skill_owners: BTreeMap<String, String>,
+}
+
 pub fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
     format!("{skill_id}_{}", package_short_id(package))
 }
 
-fn package_short_id(package: &ResolvedPackage) -> String {
+pub fn package_short_id(package: &ResolvedPackage) -> String {
     match &package.source {
         PackageSource::Git { rev, .. } => short_source_id(rev),
         PackageSource::Path { .. } | PackageSource::Root => short_source_id(
@@ -31,7 +138,7 @@ fn package_short_id(package: &ResolvedPackage) -> String {
     }
 }
 
-fn short_source_id(value: &str) -> String {
+pub fn short_source_id(value: &str) -> String {
     let short = value
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
@@ -46,54 +153,283 @@ fn short_source_id(value: &str) -> String {
     }
 }
 
-pub fn build_managed_files(
+pub fn build_output_plan(
     project_root: &Path,
     packages: &[(ResolvedPackage, PathBuf)],
-) -> Result<Vec<ManagedFile>> {
-    let mut planned = BTreeMap::<PathBuf, Vec<u8>>::new();
-    let mut opencode_instructions = Vec::new();
+) -> Result<OutputPlan> {
+    let mut plan = OutputAccumulator::default();
 
     for (package, snapshot_root) in packages {
-        merge_files(
-            &mut planned,
-            claude::managed_files(project_root, package, snapshot_root)?,
-        )?;
-        merge_files(
-            &mut planned,
-            codex::managed_files(project_root, package, snapshot_root)?,
-        )?;
-        let open_code = opencode::managed_files(project_root, package, snapshot_root)?;
-        opencode_instructions.extend(open_code.instructions);
-        merge_files(&mut planned, open_code.files)?;
-    }
-
-    if !opencode_instructions.is_empty() {
-        opencode_instructions.sort();
-        opencode_instructions.dedup();
-        planned.insert(
-            project_root.join("opencode.json"),
-            opencode::render_config(&opencode_instructions)
-                .context("failed to render OpenCode config")?,
+        warn_if_unsupported(
+            &mut plan.warnings,
+            package,
+            ArtifactKind::Skill,
+            package.manifest.discovered.skills.len(),
         );
+        warn_if_unsupported(
+            &mut plan.warnings,
+            package,
+            ArtifactKind::Agent,
+            package.manifest.discovered.agents.len(),
+        );
+        warn_if_unsupported(
+            &mut plan.warnings,
+            package,
+            ArtifactKind::Rule,
+            package.manifest.discovered.rules.len(),
+        );
+        warn_if_unsupported(
+            &mut plan.warnings,
+            package,
+            ArtifactKind::Command,
+            package.manifest.discovered.commands.len(),
+        );
+
+        for skill in &package.manifest.discovered.skills {
+            if ArtifactKind::Skill
+                .supported_adapters()
+                .contains(Adapter::Claude)
+            {
+                merge_files(
+                    &mut plan.files,
+                    claude::skill_files(project_root, package, snapshot_root, skill)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".claude/skills/{}", skill.id));
+            }
+
+            if ArtifactKind::Skill
+                .supported_adapters()
+                .contains(Adapter::Codex)
+            {
+                merge_files(
+                    &mut plan.files,
+                    codex::skill_files(project_root, package, snapshot_root, skill)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".codex/skills/{}", skill.id));
+            }
+
+            if ArtifactKind::Skill
+                .supported_adapters()
+                .contains(Adapter::OpenCode)
+            {
+                claim_opencode_skill_id(&mut plan.opencode_skill_owners, package, &skill.id)?;
+                merge_files(
+                    &mut plan.files,
+                    opencode::skill_files(project_root, snapshot_root, skill)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".opencode/skills/{}", skill.id));
+            }
+        }
+
+        for agent in &package.manifest.discovered.agents {
+            if ArtifactKind::Agent
+                .supported_adapters()
+                .contains(Adapter::Claude)
+            {
+                merge_file(
+                    &mut plan.files,
+                    claude::agent_file(project_root, snapshot_root, agent)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".claude/agents/{}.md", agent.id));
+            }
+
+            if ArtifactKind::Agent
+                .supported_adapters()
+                .contains(Adapter::OpenCode)
+            {
+                let (file, instruction) = opencode::agent_file(project_root, snapshot_root, agent)?;
+                merge_file(&mut plan.files, file)?;
+                plan.managed_files
+                    .insert(format!(".opencode/agents/{}.md", agent.id));
+                plan.opencode_instructions.insert(instruction);
+            }
+        }
+
+        for rule in &package.manifest.discovered.rules {
+            if ArtifactKind::Rule
+                .supported_adapters()
+                .contains(Adapter::Claude)
+            {
+                let (file, import_path) = claude::rule_file(project_root, snapshot_root, rule)?;
+                merge_file(&mut plan.files, file)?;
+                plan.managed_files
+                    .insert(format!(".claude/rules/{}.md", rule.id));
+                plan.claude_rule_imports.insert(import_path);
+            }
+
+            if ArtifactKind::Rule
+                .supported_adapters()
+                .contains(Adapter::Codex)
+            {
+                merge_file(
+                    &mut plan.files,
+                    codex::rule_file(project_root, snapshot_root, rule)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".codex/rules/{}.rules", rule.id));
+            }
+
+            if ArtifactKind::Rule
+                .supported_adapters()
+                .contains(Adapter::OpenCode)
+            {
+                let (file, instruction) = opencode::rule_file(project_root, snapshot_root, rule)?;
+                merge_file(&mut plan.files, file)?;
+                plan.managed_files
+                    .insert(format!(".opencode/rules/{}.md", rule.id));
+                plan.opencode_instructions.insert(instruction);
+            }
+        }
+
+        for command in &package.manifest.discovered.commands {
+            if ArtifactKind::Command
+                .supported_adapters()
+                .contains(Adapter::Claude)
+            {
+                merge_file(
+                    &mut plan.files,
+                    claude::command_file(project_root, snapshot_root, command)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".claude/commands/{}.md", command.id));
+            }
+
+            if ArtifactKind::Command
+                .supported_adapters()
+                .contains(Adapter::OpenCode)
+            {
+                merge_file(
+                    &mut plan.files,
+                    opencode::command_file(project_root, snapshot_root, command)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".opencode/commands/{}.md", command.id));
+            }
+        }
     }
 
-    Ok(planned
-        .into_iter()
-        .map(|(path, contents)| ManagedFile { path, contents })
-        .collect())
+    if !plan.claude_rule_imports.is_empty() {
+        merge_file(
+            &mut plan.files,
+            ManagedFile {
+                path: project_root.join("CLAUDE.md"),
+                contents: claude::render_memory_file(&plan.claude_rule_imports),
+            },
+        )?;
+        plan.managed_files.insert("CLAUDE.md".into());
+    }
+
+    if !plan.opencode_instructions.is_empty() {
+        merge_file(
+            &mut plan.files,
+            ManagedFile {
+                path: project_root.join("opencode.json"),
+                contents: opencode::render_config(&plan.opencode_instructions)
+                    .context("failed to render OpenCode config")?,
+            },
+        )?;
+        plan.managed_files.insert("opencode.json".into());
+    }
+
+    Ok(OutputPlan {
+        files: plan
+            .files
+            .into_iter()
+            .map(|(path, contents)| ManagedFile { path, contents })
+            .collect(),
+        managed_files: plan.managed_files.into_iter().collect(),
+        warnings: plan.warnings,
+    })
+}
+
+fn warn_if_unsupported(
+    warnings: &mut Vec<String>,
+    package: &ResolvedPackage,
+    kind: ArtifactKind,
+    count: usize,
+) {
+    if count == 0 || !kind.supported_adapters().is_empty() {
+        return;
+    }
+
+    warnings.push(format!(
+        "package `{}` discovered {} {} but no adapters support them",
+        package.alias,
+        count,
+        kind.plural_name()
+    ));
+}
+
+fn claim_opencode_skill_id(
+    owners: &mut BTreeMap<String, String>,
+    package: &ResolvedPackage,
+    skill_id: &str,
+) -> Result<()> {
+    match owners.get(skill_id) {
+        Some(existing) if existing != &package.alias => bail!(
+            "multiple packages export OpenCode skill `{skill_id}` (`{existing}` and `{}`)",
+            package.alias
+        ),
+        Some(_) => Ok(()),
+        None => {
+            owners.insert(skill_id.to_string(), package.alias.clone());
+            Ok(())
+        }
+    }
 }
 
 fn merge_files(target: &mut BTreeMap<PathBuf, Vec<u8>>, files: Vec<ManagedFile>) -> Result<()> {
     for file in files {
-        match target.get(&file.path) {
-            Some(existing) if existing != &file.contents => {
-                bail!("multiple packages want to manage {}", file.path.display());
-            }
-            Some(_) => {}
-            None => {
-                target.insert(file.path, file.contents);
-            }
+        merge_file(target, file)?;
+    }
+    Ok(())
+}
+
+fn merge_file(target: &mut BTreeMap<PathBuf, Vec<u8>>, file: ManagedFile) -> Result<()> {
+    match target.get(&file.path) {
+        Some(existing) if existing != &file.contents => {
+            bail!("multiple packages want to manage {}", file.path.display());
+        }
+        Some(_) => {}
+        None => {
+            target.insert(file.path, file.contents);
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn artifact_kind_support_matrix_matches_supported_adapters() {
+        let skill = ArtifactKind::Skill.supported_adapters();
+        assert!(skill.intersects(Adapters::CLAUDE));
+        assert!(skill.contains(Adapter::Claude));
+        assert!(skill.contains(Adapter::Codex));
+        assert!(skill.contains(Adapter::OpenCode));
+        assert_eq!(skill.iter().count(), 3);
+
+        let agent = ArtifactKind::Agent.supported_adapters();
+        assert!(agent.contains(Adapter::Claude));
+        assert!(!agent.contains(Adapter::Codex));
+        assert!(agent.contains(Adapter::OpenCode));
+
+        let rule = ArtifactKind::Rule.supported_adapters();
+        assert!(rule.contains(Adapter::Claude));
+        assert!(rule.contains(Adapter::Codex));
+        assert!(rule.contains(Adapter::OpenCode));
+
+        let command = ArtifactKind::Command.supported_adapters();
+        assert!(command.contains(Adapter::Claude));
+        assert!(!command.contains(Adapter::Codex));
+        assert!(command.contains(Adapter::OpenCode));
+
+        assert!(Adapters::NONE.is_empty());
+    }
 }
