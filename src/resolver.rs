@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
-use crate::adapters::{ManagedFile, build_managed_files};
+use crate::adapters::{ManagedFile, build_managed_files, namespaced_skill_id};
 use crate::git::{
     current_rev, ensure_git_dependency, shared_checkout_path, shared_repository_path,
     validate_shared_checkout,
@@ -103,7 +103,8 @@ pub fn sync_in_dir(
         })
         .collect::<Result<Vec<_>>>()?;
     let planned_files = build_managed_files(cwd, &package_snapshots)?;
-    let lockfile = resolution.to_lockfile(cwd, &planned_files)?;
+    let desired_paths = resolution.managed_paths(cwd);
+    let lockfile = resolution.to_lockfile()?;
     let owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
 
     if locked {
@@ -123,7 +124,7 @@ pub fn sync_in_dir(
     }
 
     validate_collisions(&planned_files, &owned_paths)?;
-    prune_stale_files(&owned_paths, &planned_files, cwd)?;
+    prune_stale_files(&owned_paths, &desired_paths, cwd)?;
     write_managed_files(&planned_files)?;
 
     if !locked {
@@ -161,14 +162,15 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path) -> Result<()> {
         .map(|package| (package.clone(), package.root.clone()))
         .collect::<Vec<_>>();
     let planned_files = build_managed_files(cwd, &package_roots)?;
-    let expected_lockfile = resolution.to_lockfile(cwd, &planned_files)?;
+    let desired_paths = resolution.managed_paths(cwd);
+    let expected_lockfile = resolution.to_lockfile()?;
     if existing_lockfile != expected_lockfile {
         bail!("{LOCKFILE_NAME} is out of date");
     }
     let owned_paths = load_owned_paths(cwd, Some(&existing_lockfile))?;
 
     validate_collisions(&planned_files, &owned_paths)?;
-    validate_state_consistency(&owned_paths, &planned_files)?;
+    validate_state_consistency(&owned_paths, &desired_paths, &planned_files)?;
 
     for package in &resolution.packages {
         if let PackageSource::Git { url, rev, .. } = &package.source {
@@ -371,11 +373,7 @@ fn compute_package_digest(manifest: &LoadedManifest) -> Result<String> {
 }
 
 impl Resolution {
-    pub fn to_lockfile(
-        &self,
-        project_root: &Path,
-        planned_files: &[ManagedFile],
-    ) -> Result<Lockfile> {
+    pub fn to_lockfile(&self) -> Result<Lockfile> {
         let mut packages = Vec::new();
 
         for package in &self.packages {
@@ -463,12 +461,70 @@ impl Resolution {
             });
         }
 
-        let managed_files = planned_files
-            .iter()
-            .map(|file| Lockfile::normalize_relative(project_root, &file.path))
-            .collect::<Result<Vec<_>>>()?;
+        Ok(Lockfile::new(packages, self.lockfile_managed_files()))
+    }
 
-        Ok(Lockfile::new(packages, managed_files))
+    pub fn managed_paths(&self, project_root: &Path) -> HashSet<PathBuf> {
+        let mut managed_paths = HashSet::new();
+        let mut has_opencode = false;
+
+        for package in &self.packages {
+            for skill in &package.manifest.discovered.skills {
+                let namespaced = namespaced_skill_id(package, &skill.id);
+                managed_paths.insert(project_root.join(".claude/skills").join(&namespaced));
+                managed_paths.insert(project_root.join(".codex/skills").join(namespaced));
+            }
+
+            for rule in &package.manifest.discovered.rules {
+                managed_paths.insert(
+                    project_root
+                        .join(".codex/rules")
+                        .join(format!("{}.rules", rule.id)),
+                );
+            }
+
+            for agent in &package.manifest.discovered.agents {
+                has_opencode = true;
+                managed_paths.insert(
+                    project_root
+                        .join(".opencode/instructions")
+                        .join(format!("{}.md", agent.id)),
+                );
+            }
+        }
+
+        if has_opencode {
+            managed_paths.insert(project_root.join("opencode.json"));
+        }
+
+        managed_paths
+    }
+
+    fn lockfile_managed_files(&self) -> Vec<String> {
+        let mut managed_files = Vec::new();
+        let mut has_opencode = false;
+
+        for package in &self.packages {
+            for skill in &package.manifest.discovered.skills {
+                managed_files.push(format!(".claude/skills/{}", skill.id));
+                managed_files.push(format!(".codex/skills/{}", skill.id));
+            }
+
+            for rule in &package.manifest.discovered.rules {
+                managed_files.push(format!(".codex/rules/{}.rules", rule.id));
+            }
+
+            for agent in &package.manifest.discovered.agents {
+                has_opencode = true;
+                managed_files.push(format!(".opencode/instructions/{}.md", agent.id));
+            }
+        }
+
+        if has_opencode {
+            managed_files.push("opencode.json".into());
+        }
+
+        managed_files
     }
 }
 
@@ -517,7 +573,7 @@ fn validate_collisions(
     owned_paths: &HashSet<PathBuf>,
 ) -> Result<()> {
     for file in planned_files {
-        if file.path.exists() && !owned_paths.contains(&file.path) {
+        if file.path.exists() && !path_is_owned(&file.path, owned_paths) {
             bail!(
                 "refusing to overwrite unmanaged file {}",
                 file.path.display()
@@ -530,19 +586,23 @@ fn validate_collisions(
 
 fn prune_stale_files(
     owned_paths: &HashSet<PathBuf>,
-    planned_files: &[ManagedFile],
+    desired_paths: &HashSet<PathBuf>,
     project_root: &Path,
 ) -> Result<()> {
-    let desired_paths = planned_files
-        .iter()
-        .map(|file| file.path.clone())
-        .collect::<HashSet<_>>();
-
-    for path in owned_paths.difference(&desired_paths) {
-        if path.exists() {
-            fs::remove_file(path).with_context(|| {
-                format!("failed to remove stale managed file {}", path.display())
-            })?;
+    for path in owned_paths.difference(desired_paths) {
+        if let Ok(metadata) = fs::symlink_metadata(path) {
+            if metadata.file_type().is_dir() {
+                fs::remove_dir_all(path).with_context(|| {
+                    format!(
+                        "failed to remove stale managed directory {}",
+                        path.display()
+                    )
+                })?;
+            } else {
+                fs::remove_file(path).with_context(|| {
+                    format!("failed to remove stale managed file {}", path.display())
+                })?;
+            }
             prune_empty_parent_dirs(path, project_root)?;
         }
     }
@@ -560,14 +620,10 @@ fn write_managed_files(planned_files: &[ManagedFile]) -> Result<()> {
 
 fn validate_state_consistency(
     owned_paths: &HashSet<PathBuf>,
+    desired_paths: &HashSet<PathBuf>,
     planned_files: &[ManagedFile],
 ) -> Result<()> {
-    let desired_paths = planned_files
-        .iter()
-        .map(|file| file.path.clone())
-        .collect::<HashSet<_>>();
-
-    if let Some(path) = owned_paths.difference(&desired_paths).next() {
+    if let Some(path) = owned_paths.difference(desired_paths).next() {
         bail!("stale managed state entry for {}", path.display());
     }
 
@@ -577,7 +633,19 @@ fn validate_state_consistency(
         }
     }
 
+    for file in planned_files {
+        if path_is_owned(&file.path, owned_paths) && !file.path.exists() {
+            bail!("managed file is missing from disk: {}", file.path.display());
+        }
+    }
+
     Ok(())
+}
+
+fn path_is_owned(path: &Path, owned_paths: &HashSet<PathBuf>) -> bool {
+    owned_paths
+        .iter()
+        .any(|owned| path == owned || path.starts_with(owned))
 }
 
 fn load_owned_paths(project_root: &Path, lockfile: Option<&Lockfile>) -> Result<HashSet<PathBuf>> {
@@ -721,20 +789,21 @@ shared = { path = "vendor/shared" }
         write_skill(&temp.path().join("vendor/shared/skills/checks"), "Checks");
 
         let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
-        let planned_files = build_managed_files(
-            temp.path(),
-            &resolution
-                .packages
-                .iter()
-                .map(|package| (package.clone(), package.root.clone()))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-        let lockfile = resolution.to_lockfile(temp.path(), &planned_files).unwrap();
+        let lockfile = resolution.to_lockfile().unwrap();
 
         assert_eq!(lockfile.packages.len(), 2);
         assert_eq!(lockfile.packages[0].alias, "root");
         assert_eq!(lockfile.packages[1].alias, "shared");
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".claude/skills/review".into())
+        );
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".codex/skills/checks".into())
+        );
     }
 
     #[test]
@@ -948,6 +1017,34 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
+    fn sync_records_stable_skill_roots_in_lockfile() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/iframe-ad"), "Iframe Ad");
+
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".claude/skills/iframe-ad".into())
+        );
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".codex/skills/iframe-ad".into())
+        );
+        assert!(
+            !lockfile
+                .managed_files
+                .iter()
+                .any(|path| path.contains("iframe-ad_"))
+        );
+    }
+
+    #[test]
     fn sync_requires_opt_in_for_high_sensitivity_capabilities() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
@@ -1032,6 +1129,76 @@ sensitivity = "high"
                 .join(".opencode/instructions/security.md")
                 .exists()
         );
+    }
+
+    #[test]
+    fn sync_prunes_old_skill_directories_when_digest_changes() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+        let first_resolution =
+            resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let first_root = first_resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "root")
+            .unwrap();
+        let first_skill_id = namespaced_skill_id(first_root, "review");
+        let first_skill_dir = temp.path().join(format!(".claude/skills/{first_skill_id}"));
+        assert!(first_skill_dir.exists());
+
+        write_file(
+            &temp.path().join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Updated review skill.\n---\n# Review\nchanged\n",
+        );
+
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+        let second_resolution =
+            resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let second_root = second_resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "root")
+            .unwrap();
+        let second_skill_id = namespaced_skill_id(second_root, "review");
+        let second_skill_dir = temp
+            .path()
+            .join(format!(".claude/skills/{second_skill_id}"));
+
+        assert_ne!(first_skill_id, second_skill_id);
+        assert!(second_skill_dir.exists());
+        assert!(!first_skill_dir.exists());
+    }
+
+    #[test]
+    fn doctor_detects_missing_file_inside_managed_skill_directory() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("skills/review"), "Review");
+
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let root_package = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "root")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(root_package, "review");
+        fs::remove_file(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md")),
+        )
+        .unwrap();
+
+        let error = doctor_in_dir(temp.path(), cache.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("managed file is missing from disk"));
     }
 
     #[test]

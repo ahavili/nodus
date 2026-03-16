@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use crate::manifest::Capability;
 use crate::store::write_atomic;
 
 pub const LOCKFILE_NAME: &str = "nodus.lock";
-const LOCKFILE_VERSION: u32 = 3;
+const LOCKFILE_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lockfile {
@@ -89,36 +89,97 @@ impl Lockfile {
     }
 
     pub fn managed_paths(&self, project_root: &Path) -> Result<HashSet<PathBuf>> {
-        self.managed_files
-            .iter()
-            .map(|relative| {
-                let relative_path = Path::new(relative);
-                if relative_path.is_absolute()
-                    || relative_path
-                        .components()
-                        .any(|component| matches!(component, std::path::Component::ParentDir))
-                {
-                    bail!(
-                        "managed path {} escapes project root {}",
-                        relative,
-                        project_root.display()
-                    );
-                }
-                let path = project_root.join(relative_path);
-                Ok(path)
-            })
-            .collect()
+        let mut managed_paths = HashSet::new();
+
+        for relative in &self.managed_files {
+            let relative_path = Self::validate_managed_relative(relative, project_root)?;
+            if let Some(paths) = self.expand_skill_root(project_root, relative_path) {
+                managed_paths.extend(paths);
+            } else {
+                managed_paths.insert(project_root.join(relative_path));
+            }
+        }
+
+        Ok(managed_paths)
     }
 
-    pub fn normalize_relative(project_root: &Path, path: &Path) -> Result<String> {
-        let relative = path.strip_prefix(project_root).with_context(|| {
-            format!(
-                "managed path {} is not inside project root {}",
-                path.display(),
+    fn validate_managed_relative<'a>(relative: &'a str, project_root: &Path) -> Result<&'a Path> {
+        let relative_path = Path::new(relative);
+        if relative_path.is_absolute()
+            || relative_path
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+        {
+            bail!(
+                "managed path {} escapes project root {}",
+                relative,
                 project_root.display()
-            )
-        })?;
-        Ok(relative.to_string_lossy().replace('\\', "/"))
+            );
+        }
+        Ok(relative_path)
+    }
+
+    fn expand_skill_root(&self, project_root: &Path, relative_path: &Path) -> Option<Vec<PathBuf>> {
+        let components = relative_path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        let [runtime, skills_dir, skill_id] = components.as_slice() else {
+            return None;
+        };
+
+        if (*runtime != ".claude" && *runtime != ".codex") || *skills_dir != "skills" {
+            return None;
+        }
+
+        let paths = self
+            .packages
+            .iter()
+            .filter(|package| package.skills.iter().any(|existing| existing == skill_id))
+            .map(|package| {
+                project_root.join(format!(
+                    "{runtime}/skills/{}_{}",
+                    skill_id,
+                    locked_package_short_id(package)
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        if paths.is_empty() { None } else { Some(paths) }
+    }
+}
+
+fn locked_package_short_id(package: &LockedPackage) -> String {
+    match package.source.kind.as_str() {
+        "git" => short_source_id(
+            package
+                .source
+                .rev
+                .as_deref()
+                .unwrap_or(package.digest.as_str()),
+        ),
+        _ => short_source_id(
+            package
+                .digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&package.digest),
+        ),
+    }
+}
+
+fn short_source_id(value: &str) -> String {
+    let short = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .take(6)
+        .collect::<String>()
+        .to_ascii_lowercase();
+
+    if short.is_empty() {
+        "local0".into()
+    } else {
+        short
     }
 }
 
@@ -153,7 +214,7 @@ mod tests {
                 }],
             }],
             vec![
-                ".claude/skills/review_a1b2c3/SKILL.md".into(),
+                ".claude/skills/review".into(),
                 ".codex/rules/safe-shell.rules".into(),
             ],
         );
@@ -162,5 +223,43 @@ mod tests {
         let decoded: Lockfile = toml::from_str(&encoded).unwrap();
 
         assert_eq!(decoded, lockfile);
+    }
+
+    #[test]
+    fn expands_logical_skill_roots_to_namespaced_directories() {
+        let lockfile = Lockfile::new(
+            vec![LockedPackage {
+                alias: "iframe_ad".into(),
+                name: "iframe-ad".into(),
+                version_tag: Some("v0.1.0".into()),
+                source: LockedSource {
+                    kind: "git".into(),
+                    path: None,
+                    url: Some("https://github.com/example/iframe-ad".into()),
+                    tag: Some("v0.1.0".into()),
+                    rev: Some("01f556abcdef".into()),
+                },
+                digest: "sha256:abc".into(),
+                skills: vec!["iframe-ad".into()],
+                agents: vec![],
+                rules: vec![],
+                commands: vec![],
+                dependencies: vec![],
+                capabilities: vec![],
+            }],
+            vec![
+                ".claude/skills/iframe-ad".into(),
+                ".codex/skills/iframe-ad".into(),
+            ],
+        );
+
+        let managed_paths = lockfile.managed_paths(Path::new("/tmp/project")).unwrap();
+
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.claude/skills/iframe-ad_01f556"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.codex/skills/iframe-ad_01f556"
+        )));
     }
 }

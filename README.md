@@ -275,7 +275,7 @@ This is especially important for OpenCode. Nodus manages `.opencode/instructions
 - content digest
 - discovered skills / agents / rules / commands
 - declared capabilities
-- managed file paths
+- managed runtime ownership entries
 
 Resolved packages are snapshotted under:
 
@@ -310,6 +310,8 @@ For skill folders, `<source-id>` is a short deterministic suffix:
 - Git dependencies use the first 6 characters of the locked commit SHA
 - Root and local-path packages use the first 6 characters of the package content digest
 - Commands: discovered and locked, but not emitted
+
+In `nodus.lock`, those skill outputs are tracked by stable logical roots such as `.claude/skills/<skill-id>` and `.codex/skills/<skill-id>`. During sync and doctor, Nodus expands each logical root back to the concrete hashed directory using the locked package source.
 
 ## Development
 
