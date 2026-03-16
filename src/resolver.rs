@@ -40,13 +40,14 @@ struct ResolverState {
     seen_by_name: BTreeMap<String, SeenPackage>,
 }
 
-pub fn sync(locked: bool, _allow_high_sensitivity: bool) -> Result<()> {
+pub fn sync(locked: bool, allow_high_sensitivity: bool) -> Result<()> {
     let cwd = env::current_dir().context("failed to determine the current directory")?;
-    sync_in_dir(&cwd, locked)
+    sync_in_dir(&cwd, locked, allow_high_sensitivity)
 }
 
-pub fn sync_in_dir(cwd: &Path, locked: bool) -> Result<()> {
+pub fn sync_in_dir(cwd: &Path, locked: bool, allow_high_sensitivity: bool) -> Result<()> {
     let resolution = resolve_project(&cwd)?;
+    enforce_capabilities(&resolution, allow_high_sensitivity)?;
     let stored_packages = snapshot_resolution(&resolution)?;
     let lockfile = resolution.to_lockfile()?;
     let lockfile_path = cwd.join(LOCKFILE_NAME);
@@ -378,6 +379,35 @@ fn display_path(path: &Path) -> String {
     }
 }
 
+fn enforce_capabilities(resolution: &Resolution, allow_high_sensitivity: bool) -> Result<()> {
+    let mut high_sensitivity = Vec::new();
+
+    for package in &resolution.packages {
+        for capability in &package.manifest.manifest.capabilities {
+            eprintln!(
+                "capability: {} {} ({})",
+                package.manifest.manifest.name, capability.id, capability.sensitivity
+            );
+            if capability.sensitivity.eq_ignore_ascii_case("high") {
+                high_sensitivity.push(format!(
+                    "{}:{}",
+                    package.manifest.manifest.name, capability.id
+                ));
+            }
+        }
+    }
+
+    if !high_sensitivity.is_empty() && !allow_high_sensitivity {
+        high_sensitivity.sort();
+        bail!(
+            "high-sensitivity capabilities require --allow-high-sensitivity: {}",
+            high_sensitivity.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
 fn validate_collisions(
     planned_files: &[ManagedFile],
     owned_paths: &HashSet<PathBuf>,
@@ -635,7 +665,7 @@ path = "rules/default.rules"
 "#,
         );
 
-        sync_in_dir(temp.path(), false).unwrap();
+        sync_in_dir(temp.path(), false, false).unwrap();
 
         assert!(temp.path().join(".claude/skills/review/SKILL.md").exists());
         assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
@@ -676,7 +706,9 @@ path = "skills/review"
             "manually managed\n",
         );
 
-        let error = sync_in_dir(temp.path(), false).unwrap_err().to_string();
+        let error = sync_in_dir(temp.path(), false, false)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("refusing to overwrite unmanaged file"));
     }
 
@@ -706,7 +738,7 @@ path = "agents/security-reviewer.md"
 "#,
         );
 
-        sync_in_dir(temp.path(), false).unwrap();
+        sync_in_dir(temp.path(), false, false).unwrap();
         assert!(
             temp.path()
                 .join(".opencode/instructions/security-reviewer.md")
@@ -726,7 +758,7 @@ path = "skills/review"
 "#,
         );
 
-        sync_in_dir(temp.path(), false).unwrap();
+        sync_in_dir(temp.path(), false, false).unwrap();
 
         assert!(
             !temp
@@ -735,5 +767,36 @@ path = "skills/review"
                 .exists()
         );
         assert!(!temp.path().join("opencode.json").exists());
+    }
+
+    #[test]
+    fn sync_requires_opt_in_for_high_sensitivity_capabilities() {
+        let temp = TempDir::new().unwrap();
+
+        write_skill(&temp.path().join("skills/review"), "Review");
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+api_version = "agentpack/v0"
+name = "root"
+version = "0.1.0"
+
+[[exports.skills]]
+id = "review"
+path = "skills/review"
+
+[[capabilities]]
+id = "shell.exec"
+sensitivity = "high"
+"#,
+        );
+
+        let error = sync_in_dir(temp.path(), false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--allow-high-sensitivity"));
+
+        sync_in_dir(temp.path(), false, true).unwrap();
+        assert!(temp.path().join(".claude/skills/review/SKILL.md").exists());
     }
 }
