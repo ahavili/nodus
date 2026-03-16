@@ -73,7 +73,7 @@ That creates:
 Add a dependency from Git:
 
 ```bash
-nodus add wenext-limited/playbook-ios --adapter codex
+nodus add obra/superpowers --adapter codex
 ```
 
 That command:
@@ -110,7 +110,7 @@ nodus sync --allow-high-sensitivity
 Remove a configured dependency and prune its managed outputs:
 
 ```bash
-nodus remove playbook_ios
+nodus remove superpowers
 ```
 
 Use a custom shared cache root when needed:
@@ -130,7 +130,7 @@ A minimal consumer manifest looks like:
 enabled = ["codex"]
 
 [dependencies]
-playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
+superpowers = { github = "obra/superpowers", tag = "v0.1.0" }
 ```
 
 You can also use local path dependencies:
@@ -233,7 +233,7 @@ nodus --cache-path /tmp/nodus-cache add <url>
 
 Behavior:
 
-- accepts a full Git URL or a GitHub shortcut like `wenext-limited/playbook-ios`
+- accepts a full Git URL or a GitHub shortcut like `obra/superpowers`
 - infers the dependency alias from the repo name
 - fetches a shared bare mirror into the cache root
 - materializes a shared cached checkout for the resolved revision under the cache root
@@ -248,7 +248,7 @@ Behavior:
 Example:
 
 ```bash
-nodus add wenext-limited/playbook-ios
+nodus add obra/superpowers
 ```
 
 ### `nodus init`
