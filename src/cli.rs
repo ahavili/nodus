@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use crate::adapters::Adapter;
+use crate::manifest::DependencyComponent;
 use crate::report::Reporter;
 
 #[derive(Debug, Parser)]
@@ -44,6 +45,12 @@ enum Command {
             help = "Select one or more adapters to persist for this repository"
         )]
         adapter: Vec<Adapter>,
+        #[arg(
+            long,
+            value_enum,
+            help = "Select which dependency components to install from the package"
+        )]
+        component: Vec<DependencyComponent>,
     },
     #[command(about = "Remove a dependency and prune its managed outputs")]
     Remove {
@@ -101,13 +108,19 @@ fn run_command_in_dir(
     reporter: &Reporter,
 ) -> anyhow::Result<()> {
     match command {
-        Command::Add { url, tag, adapter } => {
+        Command::Add {
+            url,
+            tag,
+            adapter,
+            component,
+        } => {
             let summary = crate::git::add_dependency_in_dir_with_adapters(
                 cwd,
                 cache_root,
                 &url,
                 tag.as_deref(),
                 &adapter,
+                &component,
                 reporter,
             )?;
             reporter.finish(format!(
@@ -329,6 +342,7 @@ mod tests {
         assert!(help.contains("Git URL, local path, or GitHub shortcut like owner/repo"));
         assert!(help.contains("Pin a specific Git tag instead of resolving the latest tag"));
         assert!(help.contains("Select one or more adapters to persist for this repository"));
+        assert!(help.contains("Select which dependency components to install from the package"));
     }
 
     #[test]
@@ -349,6 +363,33 @@ mod tests {
                 assert_eq!(
                     adapter,
                     vec![super::Adapter::Codex, super::Adapter::OpenCode]
+                );
+            }
+            other => panic!("expected add command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_repeatable_add_component_flags() {
+        let cli = Cli::try_parse_from([
+            "nodus",
+            "add",
+            "example/repo",
+            "--component",
+            "skills",
+            "--component",
+            "agents",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Add { component, .. } => {
+                assert_eq!(
+                    component,
+                    vec![
+                        crate::manifest::DependencyComponent::Skills,
+                        crate::manifest::DependencyComponent::Agents
+                    ]
                 );
             }
             other => panic!("expected add command, got {other:?}"),
@@ -379,6 +420,7 @@ mod tests {
                 url,
                 tag: None,
                 adapter: vec![Adapter::Codex],
+                component: vec![],
             },
             temp.path(),
             cache.path(),

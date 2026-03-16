@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
+use clap::ValueEnum;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use toml::Table;
@@ -61,6 +62,34 @@ pub struct DependencySpec {
     pub path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub components: Option<Vec<DependencyComponent>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum DependencyComponent {
+    #[value(name = "skills")]
+    Skills,
+    #[value(name = "agents")]
+    Agents,
+    #[value(name = "rules")]
+    Rules,
+    #[value(name = "commands")]
+    Commands,
+}
+
+impl DependencyComponent {
+    pub const ALL: [Self; 4] = [Self::Skills, Self::Agents, Self::Rules, Self::Commands];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skills => "skills",
+            Self::Agents => "agents",
+            Self::Rules => "rules",
+            Self::Commands => "commands",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +283,14 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
             if let Some(tag) = &dependency.tag {
                 fields.push(format!("tag = {}", quote(tag)));
             }
+            if let Some(components) = dependency.explicit_components_sorted() {
+                let encoded = components
+                    .into_iter()
+                    .map(|component| quote(component.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                fields.push(format!("components = [{encoded}]"));
+            }
             output.push_str(&format!("{alias} = {{ {} }}\n", fields.join(", ")));
         }
     }
@@ -327,6 +364,20 @@ impl LoadedManifest {
                     }
                 }
             }
+
+            let Some(components) = &dependency.components else {
+                continue;
+            };
+            if components.is_empty() {
+                bail!("dependency `{alias}` field `components` must not be empty");
+            }
+
+            let mut sorted = components.clone();
+            sorted.sort();
+            sorted.dedup();
+            if sorted.len() != components.len() {
+                bail!("dependency `{alias}` field `components` must not contain duplicates");
+            }
         }
 
         Ok(())
@@ -394,6 +445,23 @@ impl Manifest {
 }
 
 impl DependencySpec {
+    pub fn explicit_components_sorted(&self) -> Option<Vec<DependencyComponent>> {
+        let mut components = self.components.clone()?;
+        components.sort();
+        Some(components)
+    }
+
+    pub fn normalized_components(&self) -> Vec<DependencyComponent> {
+        self.explicit_components_sorted()
+            .unwrap_or_else(|| DependencyComponent::ALL.to_vec())
+    }
+
+    pub fn selects_component(&self, component: DependencyComponent) -> bool {
+        self.components
+            .as_ref()
+            .is_none_or(|components| components.contains(&component))
+    }
+
     pub fn source_kind(&self) -> Result<DependencySourceKind> {
         let git_sources = usize::from(self.github.is_some()) + usize::from(self.url.is_some());
         match (git_sources, self.path.is_some()) {
@@ -983,6 +1051,10 @@ playbook_ios = { github = "wenext-limited", tag = "v0.1.0" }
                 url: None,
                 path: None,
                 tag: Some("v0.1.0".into()),
+                components: Some(vec![
+                    DependencyComponent::Rules,
+                    DependencyComponent::Skills,
+                ]),
             },
         );
 
@@ -991,6 +1063,7 @@ playbook_ios = { github = "wenext-limited", tag = "v0.1.0" }
         assert!(encoded.contains("[dependencies]"));
         assert!(encoded.contains("playbook_ios = {"));
         assert!(encoded.contains("github = \"wenext-limited/playbook-ios\""));
+        assert!(encoded.contains("components = [\"skills\", \"rules\"]"));
         assert!(!encoded.contains("url = "));
     }
 
@@ -1064,9 +1137,78 @@ enabled = ["unknown"]
             url: Some("https://github.com/wenext-limited/playbook-ios".into()),
             path: None,
             tag: Some("v0.1.0".into()),
+            components: None,
         };
 
         let error = dependency.source_kind().unwrap_err().to_string();
         assert!(error.contains("must not declare both `github` and `url`"));
+    }
+
+    #[test]
+    fn parses_dependency_components() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = ["skills", "agents"] }
+"#,
+        );
+
+        let loaded = load_root_from_dir(temp.path()).unwrap();
+        let dependency = loaded.manifest.dependencies.get("playbook_ios").unwrap();
+        assert_eq!(
+            dependency.explicit_components_sorted().unwrap(),
+            vec![DependencyComponent::Skills, DependencyComponent::Agents]
+        );
+    }
+
+    #[test]
+    fn rejects_empty_dependency_components() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = [] }
+"#,
+        );
+
+        let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("field `components` must not be empty"));
+    }
+
+    #[test]
+    fn rejects_duplicate_dependency_components() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = ["skills", "skills"] }
+"#,
+        );
+
+        let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("must not contain duplicates"));
+    }
+
+    #[test]
+    fn rejects_unknown_dependency_component() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", components = ["widgets"] }
+"#,
+        );
+
+        let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("unknown variant"));
     }
 }

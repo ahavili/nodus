@@ -779,7 +779,7 @@ mod tests {
         normalize_alias_from_url, remove_dependency_in_dir as remove_dependency_in_dir_impl,
         shared_checkout_path, shared_repository_path,
     };
-    use crate::manifest::{MANIFEST_FILE, load_root_from_dir};
+    use crate::manifest::{DependencyComponent, MANIFEST_FILE, load_root_from_dir};
     use crate::report::Reporter;
 
     fn write_file(path: &Path, contents: &str) {
@@ -904,6 +904,7 @@ mod tests {
         url: &str,
         tag: Option<&str>,
         adapters: &[Adapter],
+        components: &[DependencyComponent],
     ) -> Result<AddSummary> {
         let reporter = Reporter::silent();
         add_dependency_in_dir_with_adapters_impl(
@@ -912,6 +913,7 @@ mod tests {
             url,
             tag,
             adapters,
+            components,
             &reporter,
         )
     }
@@ -930,7 +932,7 @@ mod tests {
     }
 
     fn add_dependency_all(project_root: &Path, cache_root: &Path, url: &str, tag: Option<&str>) {
-        add_dependency_in_dir_with_adapters(project_root, cache_root, url, tag, &Adapter::ALL)
+        add_dependency_in_dir_with_adapters(project_root, cache_root, url, tag, &Adapter::ALL, &[])
             .unwrap();
     }
 
@@ -1037,6 +1039,26 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
+    fn add_dependency_writes_selected_components_to_manifest() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        let (_repo, url) = create_git_dependency();
+
+        add_dependency_in_dir_with_adapters(
+            temp.path(),
+            cache.path(),
+            &url,
+            Some("v0.1.0"),
+            &[Adapter::Codex],
+            &[DependencyComponent::Agents, DependencyComponent::Skills],
+        )
+        .unwrap();
+
+        let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
+        assert!(manifest.contains("components = [\"skills\", \"agents\"]"));
+    }
+
+    #[test]
     fn add_dependency_uses_latest_tag_when_not_provided() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
@@ -1063,6 +1085,7 @@ shared = { path = "vendor/shared" }
             &repo.path().to_string_lossy(),
             None,
             &Adapter::ALL,
+            &[],
         )
         .unwrap();
 
@@ -1085,6 +1108,7 @@ shared = { path = "vendor/shared" }
             &repo.path().to_string_lossy(),
             Some("v0.1.0"),
             &Adapter::ALL,
+            &[],
         )
         .unwrap_err()
         .to_string();
@@ -1123,6 +1147,7 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
             &wrapper.path().to_string_lossy(),
             Some("v0.2.0"),
             &Adapter::ALL,
+            &[],
         )
         .unwrap();
 
@@ -1193,6 +1218,7 @@ bundled = { path = "vendor/bundled" }
             &wrapper.path().to_string_lossy(),
             Some("v0.3.0"),
             &Adapter::ALL,
+            &[],
         )
         .unwrap();
 

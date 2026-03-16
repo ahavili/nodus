@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 
 use crate::adapters::Adapter;
 use crate::manifest::{
-    DependencySpec, MANIFEST_FILE, PackageRole, load_dependency_from_dir, load_from_dir,
-    write_manifest,
+    DependencyComponent, DependencySpec, MANIFEST_FILE, PackageRole, load_dependency_from_dir,
+    load_from_dir, write_manifest,
 };
 use crate::report::Reporter;
 use crate::resolver::{sync_in_dir, sync_in_dir_with_adapters};
@@ -42,10 +42,11 @@ pub fn add_dependency_with_adapters(
     url: &str,
     tag: Option<&str>,
     adapters: &[Adapter],
+    components: &[DependencyComponent],
     reporter: &Reporter,
 ) -> Result<AddSummary> {
     let cwd = std::env::current_dir().context("failed to determine the current directory")?;
-    add_dependency_in_dir_with_adapters(&cwd, cache_root, url, tag, adapters, reporter)
+    add_dependency_in_dir_with_adapters(&cwd, cache_root, url, tag, adapters, components, reporter)
 }
 
 #[allow(dead_code)]
@@ -64,6 +65,7 @@ pub fn add_dependency_in_dir_with_adapters(
     url: &str,
     tag: Option<&str>,
     adapters: &[Adapter],
+    components: &[DependencyComponent],
     reporter: &Reporter,
 ) -> Result<AddSummary> {
     let normalized_url = normalize_git_url(url);
@@ -95,6 +97,12 @@ pub fn add_dependency_in_dir_with_adapters(
             url: github.is_none().then_some(checkout.url.clone()),
             path: None,
             tag: Some(checkout.tag.clone()),
+            components: (!components.is_empty()).then(|| {
+                let mut sorted = components.to_vec();
+                sorted.sort();
+                sorted.dedup();
+                sorted
+            }),
         },
     );
     let selection = resolve_adapter_selection(
@@ -626,6 +634,7 @@ mod tests {
                 url: Some("https://github.com/wenext-limited/playbook-ios".into()),
                 path: None,
                 tag: Some("v0.1.0".into()),
+                components: None,
             },
         );
 
@@ -645,6 +654,7 @@ mod tests {
                 url: Some("https://github.com/wenext-limited/playbook-ios".into()),
                 path: None,
                 tag: Some("v0.1.0".into()),
+                components: None,
             },
         );
 
