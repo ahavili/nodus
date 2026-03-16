@@ -16,7 +16,7 @@ pub struct ManagedFile {
 }
 
 pub fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
-    format!("agen__{}__{}", package.alias, skill_id)
+    format!("{skill_id}_{}", package.alias)
 }
 
 pub fn build_managed_files(

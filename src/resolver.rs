@@ -750,12 +750,12 @@ shared = { path = "vendor/shared" }
 
         assert!(
             temp.path()
-                .join(".claude/skills/agen__root__review/SKILL.md")
+                .join(".claude/skills/review_root/SKILL.md")
                 .exists()
         );
         assert!(
             temp.path()
-                .join(".codex/skills/agen__root__review/SKILL.md")
+                .join(".codex/skills/review_root/SKILL.md")
                 .exists()
         );
         assert!(temp.path().join(".codex/rules/default.rules").exists());
@@ -791,7 +791,7 @@ sensitivity = "high"
         sync_in_dir(temp.path(), false, true).unwrap();
         assert!(
             temp.path()
-                .join(".claude/skills/agen__root__review/SKILL.md")
+                .join(".claude/skills/review_root/SKILL.md")
                 .exists()
         );
     }
