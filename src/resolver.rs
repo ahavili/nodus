@@ -1387,6 +1387,11 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
         let managed_command_file = namespaced_file_name(plugin_package, "build", "md");
         assert!(
             temp.path()
+                .join(format!(".agents/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
                 .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
@@ -1680,6 +1685,11 @@ shared = { path = "vendor/shared" }
         );
         assert!(
             temp.path()
+                .join(format!(".cursor/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
                 .join(format!(".opencode/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
@@ -1902,9 +1912,11 @@ shared = { path = "vendor/shared" }
             .unwrap();
         assert!(agents_gitignore.contains("# Managed by nodus"));
         assert!(agents_gitignore.contains(".gitignore"));
+        assert!(agents_gitignore.contains(&format!("skills/*_{suffix}/")));
         assert!(agents_gitignore.contains(&format!("commands/*_{command_suffix}.md")));
         assert!(cursor_gitignore.contains("# Managed by nodus"));
         assert!(cursor_gitignore.contains(".gitignore"));
+        assert!(cursor_gitignore.contains(&format!("skills/*_{suffix}/")));
         assert!(cursor_gitignore.contains(&format!("commands/*_{command_suffix}.md")));
         assert!(cursor_gitignore.contains(&format!("rules/*_{suffix}.mdc")));
     }

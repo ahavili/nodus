@@ -300,8 +300,10 @@ mod tests {
                 capabilities: vec![],
             }],
             vec![
+                ".agents/skills/iframe-ad".into(),
                 ".claude/skills/iframe-ad".into(),
                 ".codex/skills/iframe-ad".into(),
+                ".cursor/skills/iframe-ad".into(),
                 ".opencode/skills/iframe-ad".into(),
             ],
         );
@@ -309,10 +311,16 @@ mod tests {
         let managed_paths = lockfile.managed_paths(Path::new("/tmp/project")).unwrap();
 
         assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.agents/skills/iframe-ad_01f556"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.claude/skills/iframe-ad_01f556"
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.codex/skills/iframe-ad_01f556"
+        )));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.cursor/skills/iframe-ad_01f556"
         )));
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.opencode/skills/iframe-ad_01f556"

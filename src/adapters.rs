@@ -140,8 +140,10 @@ pub enum ArtifactKind {
 impl ArtifactKind {
     pub const fn supported_adapters(self) -> Adapters {
         match self {
-            Self::Skill => Adapters::CLAUDE
+            Self::Skill => Adapters::AGENTS
+                .union(Adapters::CLAUDE)
                 .union(Adapters::CODEX)
+                .union(Adapters::CURSOR)
                 .union(Adapters::OPENCODE),
             Self::Agent => Adapters::CLAUDE.union(Adapters::OPENCODE),
             Self::Rule => Adapters::CLAUDE
@@ -268,6 +270,19 @@ pub fn build_output_plan(
                 continue;
             }
 
+            if selected_adapters.contains(Adapter::Agents)
+                && ArtifactKind::Skill
+                    .supported_adapters()
+                    .contains(Adapter::Agents)
+            {
+                merge_files(
+                    &mut plan.files,
+                    agents::skill_files(project_root, package, snapshot_root, skill)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".agents/skills/{}", skill.id));
+            }
+
             if selected_adapters.contains(Adapter::Claude)
                 && ArtifactKind::Skill
                     .supported_adapters()
@@ -292,6 +307,19 @@ pub fn build_output_plan(
                 )?;
                 plan.managed_files
                     .insert(format!(".codex/skills/{}", skill.id));
+            }
+
+            if selected_adapters.contains(Adapter::Cursor)
+                && ArtifactKind::Skill
+                    .supported_adapters()
+                    .contains(Adapter::Cursor)
+            {
+                merge_files(
+                    &mut plan.files,
+                    cursor::skill_files(project_root, package, snapshot_root, skill)?,
+                )?;
+                plan.managed_files
+                    .insert(format!(".cursor/skills/{}", skill.id));
             }
 
             if selected_adapters.contains(Adapter::OpenCode)
@@ -536,7 +564,10 @@ fn managed_artifact_gitignore_pattern(
     artifact_name: &str,
 ) -> String {
     if artifact_dir == "skills"
-        && matches!(runtime, ".claude" | ".codex" | ".opencode")
+        && matches!(
+            runtime,
+            ".agents" | ".claude" | ".codex" | ".cursor" | ".opencode"
+        )
         && let Some((_, suffix)) = artifact_name.rsplit_once('_')
         && !suffix.is_empty()
     {
@@ -618,13 +649,13 @@ mod tests {
     #[test]
     fn artifact_kind_support_matrix_matches_supported_adapters() {
         let skill = ArtifactKind::Skill.supported_adapters();
-        assert!(!skill.contains(Adapter::Agents));
+        assert!(skill.contains(Adapter::Agents));
         assert!(skill.intersects(Adapters::CLAUDE));
         assert!(skill.contains(Adapter::Claude));
         assert!(skill.contains(Adapter::Codex));
-        assert!(!skill.contains(Adapter::Cursor));
+        assert!(skill.contains(Adapter::Cursor));
         assert!(skill.contains(Adapter::OpenCode));
-        assert_eq!(skill.iter().count(), 3);
+        assert_eq!(skill.iter().count(), 5);
 
         let agent = ArtifactKind::Agent.supported_adapters();
         assert!(!agent.contains(Adapter::Agents));

@@ -438,6 +438,7 @@ Current adapter behavior:
 - Nodus emits only the selected adapters for the repo
 - Nodus filters each dependency's own exported components before adapter-specific emission
 - If multiple adapter roots are already present, Nodus installs all detected adapters
+- Agents: discovered skills are copied to `.agents/skills/<skill-id>_<source-id>/`
 - Agents: discovered commands are copied to `.agents/commands/<command-id>_<source-id>.md`
 - Claude: discovered skills are copied to `.claude/skills/<skill-id>_<source-id>/`
 - Claude: discovered agents are copied to `.claude/agents/<agent-id>_<source-id>.md`
@@ -445,6 +446,7 @@ Current adapter behavior:
 - Claude: discovered rules are copied to `.claude/rules/<rule-id>_<source-id>.md`
 - Codex: discovered skills are copied to `.codex/skills/<skill-id>_<source-id>/`
 - Codex: discovered rules are copied to `.codex/rules/<rule-id>_<source-id>.rules`
+- Cursor: discovered skills are copied to `.cursor/skills/<skill-id>_<source-id>/`
 - Cursor: discovered commands are copied to `.cursor/commands/<command-id>_<source-id>.md`
 - Cursor: discovered rules are copied to `.cursor/rules/<rule-id>_<source-id>.mdc`
 - OpenCode: discovered skills are copied to `.opencode/skills/<skill-id>_<source-id>/`
@@ -457,7 +459,7 @@ For managed directories and files, `<source-id>` is a short deterministic suffix
 - Git dependencies use the first 6 characters of the locked commit SHA
 - Root and local-path packages use the first 6 characters of the package content digest
 
-In `nodus.lock`, managed runtime outputs are tracked by stable logical roots such as `.agents/commands/<command-id>.md`, `.claude/skills/<skill-id>`, `.codex/rules/<rule-id>.rules`, `.cursor/rules/<rule-id>.mdc`, and `.opencode/commands/<command-id>.md`. During sync and doctor, Nodus expands each logical path back to the concrete suffixed directory or file using the locked package source.
+In `nodus.lock`, managed runtime outputs are tracked by stable logical roots such as `.agents/skills/<skill-id>`, `.agents/commands/<command-id>.md`, `.claude/skills/<skill-id>`, `.codex/rules/<rule-id>.rules`, `.cursor/rules/<rule-id>.mdc`, and `.opencode/commands/<command-id>.md`. During sync and doctor, Nodus expands each logical path back to the concrete suffixed directory or file using the locked package source.
 
 For each selected runtime root, Nodus also writes a managed `.gitignore` file that ignores both itself and the generated runtime outputs inside that root.
 
