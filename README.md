@@ -33,6 +33,7 @@ Point it at a GitHub repo or local path and Nodus will resolve the package, pin 
 nodus add obra/superpowers --adapter codex
 nodus add obra/superpowers --adapter codex --component skills
 nodus info obra/superpowers
+nodus outdated
 nodus doctor
 ```
 
@@ -45,7 +46,7 @@ The install flow is designed to stay predictable:
 - unmanaged files are never overwritten
 - high-sensitivity packages require explicit opt-in
 
-Package authors can still publish content from `skills/`, `agents/`, `rules/`, and `commands/`, but as a consumer you mostly interact with `nodus add`, `nodus info`, `nodus sync`, and `nodus doctor`.
+Package authors can still publish content from `skills/`, `agents/`, `rules/`, and `commands/`, but as a consumer you mostly interact with `nodus add`, `nodus info`, `nodus outdated`, `nodus sync`, and `nodus doctor`.
 
 ## Install
 
@@ -396,6 +397,16 @@ Behavior:
 Removes one dependency from `nodus.toml` and runs the normal sync flow to update
 `nodus.lock` and prune managed runtime files. The package argument accepts either the
 dependency alias or a repository reference like `owner/repo`.
+
+### `nodus outdated`
+
+Checks direct dependencies from `nodus.toml` for newer upstream tags or branch head changes.
+
+Behavior:
+
+- tagged Git dependencies are compared against the newest available tag in the shared mirror
+- branch Git dependencies are compared against the currently locked revision in `nodus.lock`
+- path dependencies are reported as local paths and are never marked outdated
 
 ### `nodus sync`
 

@@ -93,6 +93,8 @@ enum Command {
         )]
         model: Option<String>,
     },
+    #[command(about = "Check direct dependencies for newer tags or branch head changes")]
+    Outdated,
     #[command(about = "Create a minimal nodus.toml and example skill")]
     Init,
     #[command(about = "Resolve dependencies and write managed runtime outputs")]
@@ -212,6 +214,22 @@ fn run_command_in_dir(
                 "reviewed {} packages with {}",
                 summary.package_count, summary.provider
             ))?;
+            Ok(())
+        }
+        Command::Outdated => {
+            let summary = crate::outdated::check_outdated_in_dir(cwd, cache_root, reporter)?;
+            let outcome = if summary.outdated_count == 0 {
+                format!(
+                    "checked {} direct dependencies; all current",
+                    summary.dependency_count
+                )
+            } else {
+                format!(
+                    "checked {} direct dependencies; {} outdated",
+                    summary.dependency_count, summary.outdated_count
+                )
+            };
+            reporter.finish(outcome)?;
             Ok(())
         }
         Command::Init => {
@@ -443,6 +461,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_outdated_subcommand() {
+        let cli = Cli::try_parse_from(["nodus", "outdated"]).unwrap();
+
+        match cli.command {
+            Command::Outdated => {}
+            other => panic!("expected outdated command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn root_help_describes_commands() {
         let help = <Cli as clap::CommandFactory>::command()
             .render_long_help()
@@ -451,6 +479,7 @@ mod tests {
         assert!(help.contains("Nodus resolves agent packages from local paths and Git tags"));
         assert!(help.contains("Add a dependency and run sync"));
         assert!(help.contains("Display resolved package metadata"));
+        assert!(help.contains("Check direct dependencies for newer tags or branch head changes"));
         assert!(help.contains(
             "Use an AI review agent to assess whether a package graph looks safe to use"
         ));

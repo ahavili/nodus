@@ -5,6 +5,7 @@ mod git;
 mod info;
 mod lockfile;
 mod manifest;
+mod outdated;
 mod report;
 mod resolver;
 mod review;

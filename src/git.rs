@@ -237,6 +237,18 @@ pub fn ensure_git_dependency(
     })
 }
 
+pub fn prepare_repository_mirror(
+    cache_root: &Path,
+    url: &str,
+    allow_network: bool,
+    reporter: &Reporter,
+) -> Result<PathBuf> {
+    let normalized_url = normalize_git_url(url);
+    let mirror_path = shared_repository_path(cache_root, &normalized_url)?;
+    ensure_shared_repository(&mirror_path, &normalized_url, allow_network, reporter)?;
+    Ok(mirror_path)
+}
+
 pub fn shared_repository_path(cache_root: &Path, url: &str) -> Result<PathBuf> {
     let normalized_url = normalize_git_url(url);
     let repositories_root = cache_root.join("repositories");
@@ -411,7 +423,16 @@ fn ensure_shared_repository(
                 "Updating",
                 format!("repository mirror for {normalized_url}"),
             )?;
-            git_run(mirror_path, ["fetch", "--tags", "--prune", "origin"])?;
+            git_run(
+                mirror_path,
+                [
+                    "fetch",
+                    "--tags",
+                    "--prune",
+                    "origin",
+                    "+refs/heads/*:refs/heads/*",
+                ],
+            )?;
         }
         return Ok(());
     }
