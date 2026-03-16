@@ -129,6 +129,14 @@ Use a custom shared cache root when needed:
 nodus --cache-path /tmp/nodus-cache sync
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the local development workflow and release checks.
+
+## License
+
+Licensed under [Apache-2.0](LICENSE).
+
 ## Manifest
 
 The root project does not need `api_version`, `name`, or `version` just to consume dependencies.
