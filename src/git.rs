@@ -39,7 +39,7 @@ pub fn add_dependency_in_dir(
     let alias = normalize_alias_from_url(&normalized_url)?;
     let checkout = ensure_git_dependency(cache_root, &normalized_url, tag, true)?;
     load_dependency_from_dir(&checkout.path)
-        .with_context(|| format!("dependency `{alias}` does not match the Agen package layout"))?;
+        .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
 
     let mut root = load_from_dir(project_root, PackageRole::Root)?;
     if root.manifest.dependencies.contains_key(&alias) {

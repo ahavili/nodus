@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-pub const APP_CACHE_DIR: &str = "agen";
+pub const APP_CACHE_DIR: &str = "nodus";
 
 pub fn resolve_cache_root(override_path: Option<&Path>) -> Result<PathBuf> {
     match override_path {

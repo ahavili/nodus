@@ -1,6 +1,6 @@
-# Agen
+# Nodus
 
-Agen is a local-first Rust CLI for managing project-scoped agent packages by convention instead of explicit export configuration.
+Nodus is a local-first Rust CLI for managing project-scoped agent packages by convention instead of explicit export configuration.
 
 The current implementation discovers package content from repository folders, supports Git-tag dependencies backed entirely by a shared remote repository cache and shared cached checkouts, locks exact commits in `agentpack.lock`, snapshots package contents into a content-addressed store, and emits managed runtime outputs for Claude, Codex, and OpenCode.
 
@@ -15,8 +15,8 @@ The current MVP supports:
   - `commands/`
 - Minimal root `agentpack.toml`
 - Git dependencies pinned by `tag` in the manifest and exact `rev` in the lockfile
-- `agen add <url>` with automatic latest-tag selection
-- `agen add <url> --tag <tag>` for explicit pinning
+- `nodus add <url>` with automatic latest-tag selection
+- `nodus add <url> --tag <tag>` for explicit pinning
 - Shared Git repository cache with shared cached checkouts by revision
 - Shared content-addressed snapshots in the cache root
 - Deterministic `agentpack.lock`
@@ -50,13 +50,13 @@ cargo install --path .
 Then run it directly:
 
 ```bash
-agen <command>
+nodus <command>
 ```
 
-By default, Agen stores shared Git repository mirrors in the system cache directory for this app. On macOS, that is:
+By default, Nodus stores shared Git repository mirrors in the system cache directory for this app. On macOS, that is:
 
 ```text
-~/Library/Caches/agen/
+~/Library/Caches/nodus/
 ```
 
 You can override that location for any command with `--cache-path <path>`.
@@ -66,7 +66,7 @@ You can override that location for any command with `--cache-path <path>`.
 Initialize a local package skeleton:
 
 ```bash
-agen init
+nodus init
 ```
 
 That creates:
@@ -77,43 +77,43 @@ That creates:
 Add a Git dependency by tag:
 
 ```bash
-agen add wenext-limited/playbook-ios
+nodus add wenext-limited/playbook-ios
 ```
 
 Sync discovered content into managed runtime outputs:
 
 ```bash
-agen sync
+nodus sync
 ```
 
 If the root project declares any `high` sensitivity capabilities:
 
 ```bash
-agen sync --allow-high-sensitivity
+nodus sync --allow-high-sensitivity
 ```
 
 Validate that the repo, shared cached dependencies, lockfile, and owned outputs are all consistent:
 
 ```bash
-agen doctor
+nodus doctor
 ```
 
 Remove one configured dependency and prune its managed outputs:
 
 ```bash
-agen uninstall playbook_ios
+nodus uninstall playbook_ios
 ```
 
 For reproducible CI:
 
 ```bash
-agen sync --locked
+nodus sync --locked
 ```
 
 Use a custom shared cache root when needed:
 
 ```bash
-agen --cache-path /tmp/agen-cache sync
+nodus --cache-path /tmp/nodus-cache sync
 ```
 
 ## Manifest
@@ -158,7 +158,7 @@ Unknown manifest fields are ignored with warnings.
 
 ## Discovery Rules
 
-Agen validates and discovers package content by top-level folders:
+Nodus validates and discovers package content by top-level folders:
 
 - `skills/<id>/SKILL.md` => skill
 - `agents/<id>.md` => agent
@@ -180,24 +180,24 @@ Discovered `commands/` content is currently validated and locked, but not emitte
 
 ## Commands
 
-### `agen add`
+### `nodus add`
 
 ```bash
-agen add <url>
+nodus add <url>
 ```
 
-By default, Agen resolves the latest Git tag, writes that tag into `agentpack.toml`, and immediately runs a normal `agen sync`.
+By default, Nodus resolves the latest Git tag, writes that tag into `agentpack.toml`, and immediately runs a normal `nodus sync`.
 
 You can still pin a specific tag explicitly:
 
 ```bash
-agen add <url> --tag <tag>
+nodus add <url> --tag <tag>
 ```
 
 You can also override the shared repository cache root for this command:
 
 ```bash
-agen --cache-path /tmp/agen-cache add <url>
+nodus --cache-path /tmp/nodus-cache add <url>
 ```
 
 Behavior:
@@ -214,20 +214,20 @@ Behavior:
 Example:
 
 ```bash
-agen add wenext-limited/playbook-ios
+nodus add wenext-limited/playbook-ios
 ```
 
-### `agen init`
+### `nodus init`
 
 Creates an empty `agentpack.toml` plus `skills/example/SKILL.md`.
 
-### `agen uninstall`
+### `nodus uninstall`
 
 Removes one dependency from `agentpack.toml` and runs the normal sync flow to update
 `agentpack.lock` and prune managed runtime files. The package argument accepts either the
 dependency alias or a repository reference like `owner/repo`.
 
-### `agen sync`
+### `nodus sync`
 
 Resolves the root project plus configured dependencies, snapshots their discovered content, writes `agentpack.lock`, and emits managed runtime outputs.
 
@@ -237,7 +237,7 @@ Options:
 - `--locked`: fail if `agentpack.lock` would change
 - `--allow-high-sensitivity`: allow packages that declare `high` sensitivity capabilities
 
-### `agen doctor`
+### `nodus doctor`
 
 Checks that:
 
@@ -252,15 +252,15 @@ Checks that:
 
 ## Managed Files
 
-Agen only manages files it wrote itself.
+Nodus only manages files it wrote itself.
 
-Managed files are tracked in `agentpack.lock`. During sync, Agen:
+Managed files are tracked in `agentpack.lock`. During sync, Nodus:
 
 - writes or updates managed files
 - removes stale managed files that are no longer desired
 - refuses to overwrite existing unmanaged files
 
-This is especially important for OpenCode. Agen manages `.opencode/instructions/` and `opencode.json`, but it does not overwrite a top-level `AGENTS.md`.
+This is especially important for OpenCode. Nodus manages `.opencode/instructions/` and `opencode.json`, but it does not overwrite a top-level `AGENTS.md`.
 
 ## Lockfile and Store
 

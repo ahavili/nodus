@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "Agen manages project-scoped agent packages", long_about = None)]
+#[command(author, version, about = "Nodus manages project-scoped agent packages", long_about = None)]
 struct Cli {
     #[arg(long, global = true)]
     cache_path: Option<PathBuf>,

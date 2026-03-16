@@ -116,7 +116,7 @@ pub fn sync_in_dir(
         };
         if *existing != lockfile {
             bail!(
-                "{} is out of date; run `agen sync` without `--locked` to regenerate it",
+                "{} is out of date; run `nodus sync` without `--locked` to regenerate it",
                 LOCKFILE_NAME
             );
         }
@@ -838,7 +838,7 @@ shared = { path = "vendor/shared" }
         .unwrap_err()
         .to_string();
 
-        assert!(error.contains("does not match the Agen package layout"));
+        assert!(error.contains("does not match the Nodus package layout"));
     }
 
     #[test]
