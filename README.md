@@ -1,12 +1,25 @@
 # Nodus
 
-Nodus is a local-first Rust CLI for managing project-scoped agent packages.
+Nodus is a local-first Rust CLI for shipping project-scoped agent packages without the usual layout drift.
 
-It lets a repository publish agent assets by convention, resolves those packages from Git tags or local paths, locks exact revisions in `nodus.lock`, snapshots resolved content into a shared local store, and emits managed runtime files for Claude, Codex, and OpenCode.
+It gives a repository one package shape for `skills/`, `agents/`, `rules/`, and `commands/`, resolves dependencies from Git tags or local paths, locks exact revisions in `nodus.lock`, snapshots the result into a shared store, and emits managed runtime files for Claude, Codex, and OpenCode.
+
+If you want agent setup to feel reproducible instead of hand-tuned, Nodus is built for that.
+
+## Highlights
+
+- One package format, multiple runtimes: keep agent assets in one repository shape and emit only the adapter outputs your project actually uses
+- Deterministic sync: resolve from tags, lock exact revisions, snapshot package content, and regenerate managed outputs from stable state
+- Shared local store: reuse mirrors, checkouts, and content-addressed snapshots across projects instead of refetching everything per repo
+- Safe file ownership: Nodus tracks what it wrote, prunes stale generated files, and refuses to overwrite unmanaged files
+- Explicit safety gates: packages that declare `high` sensitivity capabilities require an intentional opt-in before sync completes
+- CI-friendly by design: `nodus sync --locked` and `nodus doctor` make it straightforward to verify that a repo matches its expected state
 
 ## Why Nodus
 
-Agent customization tends to drift because every runtime expects a different on-disk layout. Nodus gives teams one package shape and one sync flow:
+Agent customization tends to drift because every runtime expects a different on-disk layout. Teams end up copying instructions around, patching generated folders by hand, and hoping everyone converges on the same setup.
+
+Nodus replaces that with one sync flow:
 
 - Discover package content from conventional folders:
   - `skills/`
@@ -20,7 +33,15 @@ Agent customization tends to drift because every runtime expects a different on-
 - Protect unmanaged files from accidental overwrite
 - Gate high-sensitivity packages behind explicit opt-in
 
-## Current Scope
+## How It Works
+
+1. A package repo exposes agent assets from top-level folders like `skills/`, `agents/`, `rules/`, and `commands/`.
+2. A consuming repo adds that package from a Git tag or local path.
+3. Nodus resolves dependencies, locks exact state, snapshots the package content, and writes runtime-specific files into managed directories such as `.codex/` or `.claude/`.
+
+That means the source package stays clean, the generated outputs stay reproducible, and every repo can choose only the adapters it needs.
+
+## Available Today
 
 Nodus currently supports:
 
@@ -31,7 +52,7 @@ Nodus currently supports:
 - Repo-level adapter selection that can be inferred, chosen explicitly, or persisted
 - Validation of shared store state, lockfile state, and managed files with `nodus doctor`
 
-Not implemented yet:
+Planned later:
 
 - Remote registries
 - Package publishing workflows
@@ -123,16 +144,16 @@ That command:
 - persists adapter selection when needed
 - runs a normal sync immediately
 
-Sync dependencies into managed runtime outputs:
-
-```bash
-nodus sync
-```
-
-Validate that the repo, lockfile, managed outputs, and shared store are consistent:
+Check the generated state back into your repo workflow:
 
 ```bash
 nodus doctor
+```
+
+Or resync dependencies into managed runtime outputs at any time:
+
+```bash
+nodus sync
 ```
 
 For reproducible CI:
@@ -158,6 +179,16 @@ Use a custom shared store root when needed:
 ```bash
 nodus --store-path /tmp/nodus-store sync
 ```
+
+Typical flow in practice:
+
+```bash
+nodus init
+nodus add obra/superpowers --adapter codex
+nodus doctor
+```
+
+After that, your repo has a pinned dependency in `nodus.toml`, exact resolved state in `nodus.lock`, and managed runtime files under the adapter root you selected.
 
 ## Contributing
 
