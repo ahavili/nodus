@@ -359,7 +359,7 @@ For skill folders, `<source-id>` is a short deterministic suffix:
 
 In `nodus.lock`, the hashed Claude and Codex skill outputs are tracked by stable logical roots such as `.claude/skills/<skill-id>` and `.codex/skills/<skill-id>`. During sync and doctor, Nodus expands each logical root back to the concrete hashed directory using the locked package source. OpenCode skills are tracked directly at `.opencode/skills/<skill-id>`.
 
-For each selected runtime root, Nodus also writes a managed `.gitignore` file that ignores the generated runtime outputs inside that root.
+For each selected runtime root, Nodus also writes a managed `.gitignore` file that ignores both itself and the generated runtime outputs inside that root.
 
 ## Development
 

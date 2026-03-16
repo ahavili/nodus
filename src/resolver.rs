@@ -1085,6 +1085,7 @@ shared = { path = "vendor/shared" }
         let codex_gitignore = fs::read_to_string(temp.path().join(".codex/.gitignore")).unwrap();
 
         assert!(codex_gitignore.contains("# Managed by nodus"));
+        assert!(codex_gitignore.contains(".gitignore"));
         assert!(codex_gitignore.contains(&format!("skills/{managed_skill_id}/")));
         assert!(codex_gitignore.contains("rules/default.rules"));
     }

@@ -432,7 +432,7 @@ fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, 
 }
 
 fn render_gitignore(patterns: &BTreeSet<String>) -> String {
-    let mut output = String::from("# Managed by nodus\n");
+    let mut output = String::from("# Managed by nodus\n.gitignore\n");
     for pattern in patterns {
         output.push_str(pattern);
         output.push('\n');
