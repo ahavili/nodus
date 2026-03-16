@@ -71,11 +71,31 @@ pub fn sync(cache_root: &Path, locked: bool, allow_high_sensitivity: bool) -> Re
     sync_in_dir(&cwd, cache_root, locked, allow_high_sensitivity)
 }
 
+pub fn sync_with_adapters(
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    adapters: &[crate::adapters::Adapter],
+) -> Result<()> {
+    let cwd = env::current_dir().context("failed to determine the current directory")?;
+    sync_in_dir_with_adapters(&cwd, cache_root, locked, allow_high_sensitivity, adapters)
+}
+
 pub fn sync_in_dir(
     cwd: &Path,
     cache_root: &Path,
     locked: bool,
     allow_high_sensitivity: bool,
+) -> Result<()> {
+    sync_in_dir_with_adapters(cwd, cache_root, locked, allow_high_sensitivity, &[])
+}
+
+pub fn sync_in_dir_with_adapters(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    _adapters: &[crate::adapters::Adapter],
 ) -> Result<()> {
     let resolution = resolve_project(cwd, cache_root, ResolveMode::Sync)?;
     enforce_capabilities(&resolution, allow_high_sensitivity)?;

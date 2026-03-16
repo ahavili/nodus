@@ -8,6 +8,8 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use toml::Table;
 
+use crate::adapters::Adapter;
+
 pub const MANIFEST_FILE: &str = "nodus.toml";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -20,8 +22,15 @@ pub struct Manifest {
     pub version: Option<Version>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<Capability>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapters: Option<AdapterConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dependencies: BTreeMap<String, DependencySpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdapterConfig {
+    pub enabled: Vec<Adapter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +197,21 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
         }
     }
 
+    if let Some(adapters) = &manifest.adapters {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str("[adapters]\n");
+        let mut enabled = adapters.enabled.clone();
+        enabled.sort();
+        let encoded = enabled
+            .into_iter()
+            .map(|adapter| quote(adapter.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        output.push_str(&format!("enabled = [{encoded}]\n"));
+    }
+
     if !manifest.dependencies.is_empty() {
         if !output.is_empty() && !output.ends_with('\n') {
             output.push('\n');
@@ -228,6 +252,18 @@ impl LoadedManifest {
             && name.trim().is_empty()
         {
             bail!("manifest field `name` must not be empty");
+        }
+        if let Some(adapters) = &self.manifest.adapters {
+            if adapters.enabled.is_empty() {
+                bail!("manifest field `adapters.enabled` must not be empty");
+            }
+
+            let mut sorted = adapters.enabled.clone();
+            sorted.sort();
+            sorted.dedup();
+            if sorted.len() != adapters.enabled.len() {
+                bail!("manifest field `adapters.enabled` must not contain duplicates");
+            }
         }
 
         let allow_empty_package = role == PackageRole::Root;
@@ -620,6 +656,7 @@ fn collect_ignored_field_warnings(table: &Table) -> Vec<String> {
         "name",
         "version",
         "capabilities",
+        "adapters",
         "dependencies",
     ];
 
@@ -900,6 +937,69 @@ playbook_ios = { github = "wenext-limited", tag = "v0.1.0" }
         assert!(encoded.contains("playbook_ios = {"));
         assert!(encoded.contains("github = \"wenext-limited/playbook-ios\""));
         assert!(!encoded.contains("url = "));
+    }
+
+    #[test]
+    fn serializes_adapters_in_stable_sorted_order() {
+        let manifest = Manifest {
+            adapters: Some(AdapterConfig {
+                enabled: vec![Adapter::OpenCode, Adapter::Claude, Adapter::Codex],
+            }),
+            ..Manifest::default()
+        };
+
+        let encoded = serialize_manifest(&manifest).unwrap();
+
+        assert!(encoded.contains("[adapters]"));
+        assert!(encoded.contains("enabled = [\"claude\", \"codex\", \"opencode\"]"));
+    }
+
+    #[test]
+    fn rejects_empty_adapter_selection() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[adapters]
+enabled = []
+"#,
+        );
+
+        let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("adapters.enabled"));
+    }
+
+    #[test]
+    fn rejects_duplicate_adapter_selection() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[adapters]
+enabled = ["codex", "codex"]
+"#,
+        );
+
+        let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("must not contain duplicates"));
+    }
+
+    #[test]
+    fn rejects_unknown_adapter_selection() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_file(
+            &temp.path().join(MANIFEST_FILE),
+            r#"
+[adapters]
+enabled = ["unknown"]
+"#,
+        );
+
+        let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("unknown variant"));
     }
 
     #[test]

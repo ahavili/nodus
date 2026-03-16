@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
+use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 
 use crate::resolver::{PackageSource, ResolvedPackage};
 
@@ -15,19 +17,35 @@ pub struct ManagedFile {
     pub contents: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ValueEnum,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Adapter {
+    #[value(name = "claude")]
     Claude,
+    #[value(name = "codex")]
     Codex,
+    #[value(name = "opencode", alias = "open-code")]
     OpenCode,
 }
 
 impl Adapter {
+    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::OpenCode];
+
     const fn bit(self) -> u8 {
         match self {
             Self::Claude => 1 << 0,
             Self::Codex => 1 << 1,
             Self::OpenCode => 1 << 2,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::OpenCode => "opencode",
         }
     }
 }
@@ -61,7 +79,7 @@ impl Adapters {
 
     #[allow(dead_code)]
     pub fn iter(self) -> impl Iterator<Item = Adapter> {
-        [Adapter::Claude, Adapter::Codex, Adapter::OpenCode]
+        Adapter::ALL
             .into_iter()
             .filter(move |adapter| self.contains(*adapter))
     }
@@ -70,6 +88,12 @@ impl Adapters {
 impl From<Adapter> for Adapters {
     fn from(value: Adapter) -> Self {
         Self(value.bit())
+    }
+}
+
+impl std::fmt::Display for Adapter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 

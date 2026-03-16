@@ -5,11 +5,12 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 
+use crate::adapters::Adapter;
 use crate::manifest::{
     DependencySpec, MANIFEST_FILE, PackageRole, load_dependency_from_dir, load_from_dir,
     write_manifest,
 };
-use crate::resolver::sync_in_dir;
+use crate::resolver::{sync_in_dir, sync_in_dir_with_adapters};
 
 #[derive(Debug, Clone)]
 pub struct GitCheckout {
@@ -24,6 +25,16 @@ pub fn add_dependency(cache_root: &Path, url: &str, tag: Option<&str>) -> Result
     add_dependency_in_dir(&cwd, cache_root, url, tag)
 }
 
+pub fn add_dependency_with_adapters(
+    cache_root: &Path,
+    url: &str,
+    tag: Option<&str>,
+    adapters: &[Adapter],
+) -> Result<()> {
+    let cwd = std::env::current_dir().context("failed to determine the current directory")?;
+    add_dependency_in_dir_with_adapters(&cwd, cache_root, url, tag, adapters)
+}
+
 pub fn remove_dependency(cache_root: &Path, package: &str) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to determine the current directory")?;
     remove_dependency_in_dir(&cwd, cache_root, package)
@@ -34,6 +45,16 @@ pub fn add_dependency_in_dir(
     cache_root: &Path,
     url: &str,
     tag: Option<&str>,
+) -> Result<()> {
+    add_dependency_in_dir_with_adapters(project_root, cache_root, url, tag, &[])
+}
+
+pub fn add_dependency_in_dir_with_adapters(
+    project_root: &Path,
+    cache_root: &Path,
+    url: &str,
+    tag: Option<&str>,
+    adapters: &[Adapter],
 ) -> Result<()> {
     let normalized_url = normalize_git_url(url);
     let alias = normalize_alias_from_url(&normalized_url)?;
@@ -60,7 +81,7 @@ pub fn add_dependency_in_dir(
     );
 
     write_manifest(&project_root.join(MANIFEST_FILE), &root.manifest)?;
-    sync_in_dir(project_root, cache_root, false, false)
+    sync_in_dir_with_adapters(project_root, cache_root, false, false, adapters)
 }
 
 pub fn remove_dependency_in_dir(
