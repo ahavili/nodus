@@ -3,16 +3,21 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::adapters::ManagedFile;
+use crate::adapters::{ManagedFile, namespaced_skill_id};
 use crate::manifest::{FileEntry, SkillEntry};
+use crate::resolver::ResolvedPackage;
 
 pub fn skill_files(
     project_root: &Path,
+    package: &ResolvedPackage,
     snapshot_root: &Path,
     skill: &SkillEntry,
 ) -> Result<Vec<ManagedFile>> {
     let source_root = snapshot_root.join(&skill.path);
-    let target_root = project_root.join(".opencode/skills").join(&skill.id);
+    let managed_skill_id = namespaced_skill_id(package, &skill.id);
+    let target_root = project_root
+        .join(".opencode/skills")
+        .join(&managed_skill_id);
     let mut files = Vec::new();
 
     for entry in walkdir::WalkDir::new(&source_root) {
@@ -26,7 +31,7 @@ pub fn skill_files(
                 format!("failed to read snapshot file {}", entry.path().display())
             })?;
             let contents = if relative == Path::new("SKILL.md") {
-                rewrite_skill_name(&contents, &skill.id)?
+                rewrite_skill_name(&contents, &managed_skill_id)?
             } else {
                 contents
             };

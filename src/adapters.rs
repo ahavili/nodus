@@ -154,7 +154,6 @@ struct OutputAccumulator {
     files: BTreeMap<PathBuf, Vec<u8>>,
     managed_files: BTreeSet<String>,
     warnings: Vec<String>,
-    opencode_skill_owners: BTreeMap<String, String>,
 }
 
 pub fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String {
@@ -257,10 +256,9 @@ pub fn build_output_plan(
                     .supported_adapters()
                     .contains(Adapter::OpenCode)
             {
-                claim_opencode_skill_id(&mut plan.opencode_skill_owners, package, &skill.id)?;
                 merge_files(
                     &mut plan.files,
-                    opencode::skill_files(project_root, snapshot_root, skill)?,
+                    opencode::skill_files(project_root, package, snapshot_root, skill)?,
                 )?;
                 plan.managed_files
                     .insert(format!(".opencode/skills/{}", skill.id));
@@ -436,7 +434,7 @@ fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, 
 }
 
 fn skill_gitignore_pattern(runtime: &str, skill_dir: &str) -> String {
-    if matches!(runtime, ".claude" | ".codex")
+    if matches!(runtime, ".claude" | ".codex" | ".opencode")
         && let Some((_, suffix)) = skill_dir.rsplit_once('_')
         && !suffix.is_empty()
     {
@@ -478,24 +476,6 @@ fn warn_if_unsupported(
         count,
         kind.plural_name()
     ));
-}
-
-fn claim_opencode_skill_id(
-    owners: &mut BTreeMap<String, String>,
-    package: &ResolvedPackage,
-    skill_id: &str,
-) -> Result<()> {
-    match owners.get(skill_id) {
-        Some(existing) if existing != &package.alias => bail!(
-            "multiple packages export OpenCode skill `{skill_id}` (`{existing}` and `{}`)",
-            package.alias
-        ),
-        Some(_) => Ok(()),
-        None => {
-            owners.insert(skill_id.to_string(), package.alias.clone());
-            Ok(())
-        }
-    }
 }
 
 fn merge_files(target: &mut BTreeMap<PathBuf, Vec<u8>>, files: Vec<ManagedFile>) -> Result<()> {

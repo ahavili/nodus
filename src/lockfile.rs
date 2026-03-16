@@ -129,7 +129,9 @@ impl Lockfile {
             return None;
         };
 
-        if (*runtime != ".claude" && *runtime != ".codex") || *skills_dir != "skills" {
+        if (*runtime != ".claude" && *runtime != ".codex" && *runtime != ".opencode")
+            || *skills_dir != "skills"
+        {
             return None;
         }
 
@@ -262,6 +264,8 @@ mod tests {
         assert!(managed_paths.contains(&PathBuf::from(
             "/tmp/project/.codex/skills/iframe-ad_01f556"
         )));
-        assert!(managed_paths.contains(&PathBuf::from("/tmp/project/.opencode/skills/iframe-ad")));
+        assert!(managed_paths.contains(&PathBuf::from(
+            "/tmp/project/.opencode/skills/iframe-ad_01f556"
+        )));
     }
 }

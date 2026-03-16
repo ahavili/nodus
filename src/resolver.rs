@@ -1348,7 +1348,7 @@ shared = { path = "vendor/shared" }
         assert!(temp.path().join(".codex/rules/default.rules").exists());
         assert!(
             temp.path()
-                .join(".opencode/skills/checks/SKILL.md")
+                .join(format!(".opencode/skills/{managed_skill_id}/SKILL.md"))
                 .exists()
         );
         assert!(temp.path().join(".opencode/agents/shared.md").exists());
@@ -1357,9 +1357,12 @@ shared = { path = "vendor/shared" }
         assert!(!temp.path().join(".claude/agents/security.md").exists());
         assert!(!temp.path().join(".opencode/agents/security.md").exists());
         assert!(
-            fs::read_to_string(temp.path().join(".opencode/skills/checks/SKILL.md"))
-                .unwrap()
-                .contains("name: checks")
+            fs::read_to_string(
+                temp.path()
+                    .join(format!(".opencode/skills/{managed_skill_id}/SKILL.md"))
+            )
+            .unwrap()
+            .contains(&format!("name: {managed_skill_id}"))
         );
         assert_eq!(
             fs::read_to_string(temp.path().join("AGENTS.md")).unwrap(),
@@ -1716,7 +1719,7 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
-    fn sync_rejects_duplicate_opencode_skill_ids_across_packages() {
+    fn sync_namespaces_duplicate_opencode_skill_ids_across_packages() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
         write_manifest(
@@ -1736,12 +1739,33 @@ other = { path = "vendor/other" }
             "---\nname: Other Review\ndescription: Another review skill.\n---\n# Other Review\n",
         );
 
-        let error =
-            sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &Adapter::ALL)
-                .unwrap_err()
-                .to_string();
+        sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
 
-        assert!(error.contains("multiple packages export OpenCode skill `review`"));
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let shared = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        let other = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "other")
+            .unwrap();
+        let shared_skill_id = namespaced_skill_id(shared, "review");
+        let other_skill_id = namespaced_skill_id(other, "review");
+
+        assert_ne!(shared_skill_id, other_skill_id);
+        assert!(
+            temp.path()
+                .join(format!(".opencode/skills/{shared_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/skills/{other_skill_id}/SKILL.md"))
+                .exists()
+        );
     }
 
     #[test]
