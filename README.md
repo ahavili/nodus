@@ -21,8 +21,8 @@ The current MVP supports:
 - Deterministic `agentpack.lock`
 - Content-addressed snapshots under `.agen/store/sha256/`
 - Managed output emission for:
-  - `.claude/skills/<id>/`
-  - `.codex/skills/<id>/`
+  - `.claude/skills/agen__<package>__<id>/`
+  - `.codex/skills/agen__<package>__<id>/`
   - `.codex/rules/<id>.rules`
   - `.opencode/instructions/<id>.md`
   - `opencode.json`
@@ -252,8 +252,8 @@ Sync emits from those snapshots rather than directly from mutable working trees.
 
 Current adapter behavior:
 
-- Claude: discovered skills are copied to `.claude/skills/<skill-id>/`
-- Codex: discovered skills are copied to `.codex/skills/<skill-id>/`
+- Claude: discovered skills are copied to `.claude/skills/agen__<package-alias>__<skill-id>/`
+- Codex: discovered skills are copied to `.codex/skills/agen__<package-alias>__<skill-id>/`
 - Codex: discovered rules are copied to `.codex/rules/<rule-id>.rules`
 - OpenCode: discovered agents are copied to `.opencode/instructions/<agent-id>.md`
 - OpenCode: managed instruction paths are written to `opencode.json`

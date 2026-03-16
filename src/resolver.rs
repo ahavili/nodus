@@ -748,8 +748,16 @@ shared = { path = "vendor/shared" }
 
         sync_in_dir(temp.path(), false, false).unwrap();
 
-        assert!(temp.path().join(".claude/skills/review/SKILL.md").exists());
-        assert!(temp.path().join(".codex/skills/review/SKILL.md").exists());
+        assert!(
+            temp.path()
+                .join(".claude/skills/agen__root__review/SKILL.md")
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(".codex/skills/agen__root__review/SKILL.md")
+                .exists()
+        );
         assert!(temp.path().join(".codex/rules/default.rules").exists());
         assert!(
             temp.path()
@@ -781,6 +789,11 @@ sensitivity = "high"
         assert!(error.contains("--allow-high-sensitivity"));
 
         sync_in_dir(temp.path(), false, true).unwrap();
+        assert!(
+            temp.path()
+                .join(".claude/skills/agen__root__review/SKILL.md")
+                .exists()
+        );
     }
 
     #[test]

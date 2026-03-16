@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::adapters::ManagedFile;
+use crate::adapters::{ManagedFile, namespaced_skill_id};
 use crate::resolver::ResolvedPackage;
 
 pub fn managed_files(
@@ -24,7 +24,7 @@ pub fn managed_files(
                 files.push(ManagedFile {
                     path: project_root
                         .join(".claude/skills")
-                        .join(&skill.id)
+                        .join(namespaced_skill_id(package, &skill.id))
                         .join(relative),
                     contents: fs::read(entry.path()).with_context(|| {
                         format!("failed to read snapshot file {}", entry.path().display())

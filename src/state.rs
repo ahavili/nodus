@@ -77,7 +77,8 @@ mod tests {
     fn persists_relative_owned_paths() {
         let temp = TempDir::new().unwrap();
         let owned = vec![
-            temp.path().join(".claude/skills/review/SKILL.md"),
+            temp.path()
+                .join(".claude/skills/agen__root__review/SKILL.md"),
             temp.path().join(".codex/rules/default.rules"),
         ];
 
