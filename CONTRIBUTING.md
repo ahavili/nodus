@@ -30,3 +30,4 @@ For a crates.io release:
 2. Run `cargo publish --dry-run`.
 3. Confirm the package metadata in `Cargo.toml` still reflects the release.
 4. Publish with `cargo publish`.
+5. Publish the matching GitHub Release. The `Release` workflow will build and attach binary archives for each supported platform.

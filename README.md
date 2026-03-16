@@ -47,6 +47,8 @@ Install the released crate from crates.io:
 cargo install nodus
 ```
 
+Or download a prebuilt binary archive from the GitHub release assets for your platform.
+
 Build or install from the current checkout:
 
 ```bash
