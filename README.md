@@ -27,6 +27,7 @@ Point it at a GitHub repo or local path and Nodus will resolve the package, pin 
 
 ```bash
 nodus add obra/superpowers --adapter codex
+nodus add obra/superpowers --adapter codex --component skills
 nodus doctor
 ```
 
@@ -110,6 +111,12 @@ Then add a package:
 
 ```bash
 nodus add obra/superpowers --adapter codex
+```
+
+To install only selected artifact kinds from that package:
+
+```bash
+nodus add obra/superpowers --adapter codex --component skills --component rules
 ```
 
 That one command:
@@ -201,6 +208,13 @@ enabled = ["codex"]
 superpowers = { github = "obra/superpowers", tag = "v0.1.0" }
 ```
 
+You can optionally filter which artifact kinds a dependency contributes:
+
+```toml
+[dependencies]
+superpowers = { github = "obra/superpowers", tag = "v5.0.2", components = ["skills"] }
+```
+
 You can also use local path dependencies:
 
 ```toml
@@ -230,6 +244,7 @@ justification = "Run repository checks."
 - `dependencies.<alias>.url`
 - `dependencies.<alias>.path`
 - `dependencies.<alias>.tag`
+- `dependencies.<alias>.components`
 
 Unknown manifest fields are ignored with warnings.
 
@@ -293,6 +308,13 @@ nodus add <url> --adapter codex
 nodus add <url> --adapter claude --adapter opencode
 ```
 
+You can also restrict the dependency to specific component kinds:
+
+```bash
+nodus add <url> --component skills
+nodus add <url> --component skills --component agents
+```
+
 You can also override the shared repository store root for this command:
 
 ```bash
@@ -312,6 +334,7 @@ Behavior:
 - records only the direct dependency you added in the caller manifest
 - lets the normal sync flow recursively resolve dependencies declared by the remote repo's `nodus.toml`
 - persists adapter selection when it is inferred or explicitly provided
+- persists dependency component selection when `--component` is provided
 
 Example:
 
@@ -373,6 +396,7 @@ Managed files are tracked in `nodus.lock`. During sync, Nodus:
 - requested tag
 - exact Git revision
 - content digest
+- selected dependency components, when narrowed from the package default
 - discovered skills / agents / rules / commands
 - declared capabilities
 - managed runtime ownership entries
@@ -400,6 +424,7 @@ This keeps fetched repositories, materialized checkouts, and package snapshots s
 Current adapter behavior:
 
 - Nodus emits only the selected adapters for the repo
+- Nodus filters each dependency's own exported components before adapter-specific emission
 - If multiple adapter roots are already present, Nodus installs all detected adapters
 - Claude: discovered skills are copied to `.claude/skills/<skill-id>_<source-id>/`
 - Claude: discovered agents are copied to `.claude/agents/<agent-id>_<source-id>.md`
