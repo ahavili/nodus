@@ -691,6 +691,21 @@ shared = { path = "vendor/shared" }
         assert!(manifest.contains("[dependencies]"));
         assert!(manifest.contains("tag = \"v0.1.0\""));
         assert!(manifest.contains("url = "));
+        assert!(temp.path().join("agentpack.lock").exists());
+        assert!(temp.path().join(".agen/state.json").exists());
+
+        let resolution = resolve_project(temp.path(), ResolveMode::Sync).unwrap();
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias != "root")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(dependency, "review");
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
     }
 
     #[test]

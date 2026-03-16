@@ -166,7 +166,7 @@ Discovered `commands/` content is currently validated and locked, but not emitte
 agen add <url>
 ```
 
-By default, Agen resolves the latest Git tag and writes that tag into `agentpack.toml`.
+By default, Agen resolves the latest Git tag, writes that tag into `agentpack.toml`, and immediately runs a normal `agen sync`.
 
 You can still pin a specific tag explicitly:
 

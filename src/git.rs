@@ -8,6 +8,7 @@ use crate::manifest::{
     DependencySpec, MANIFEST_FILE, PackageRole, load_dependency_from_dir, load_from_dir,
     write_manifest,
 };
+use crate::resolver::sync_in_dir;
 
 pub const DEPS_ROOT: &str = ".agen/deps";
 
@@ -47,7 +48,8 @@ pub fn add_dependency_in_dir(project_root: &Path, url: &str, tag: Option<&str>) 
         },
     );
 
-    write_manifest(&project_root.join(MANIFEST_FILE), &root.manifest)
+    write_manifest(&project_root.join(MANIFEST_FILE), &root.manifest)?;
+    sync_in_dir(project_root, false, false)
 }
 
 pub fn ensure_git_dependency(
