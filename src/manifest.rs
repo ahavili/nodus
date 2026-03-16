@@ -214,15 +214,15 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
 
 impl LoadedManifest {
     pub fn validate(&self, role: PackageRole) -> Result<()> {
-        if let Some(api_version) = &self.manifest.api_version {
-            if api_version.trim().is_empty() {
-                bail!("manifest field `api_version` must not be empty");
-            }
+        if let Some(api_version) = &self.manifest.api_version
+            && api_version.trim().is_empty()
+        {
+            bail!("manifest field `api_version` must not be empty");
         }
-        if let Some(name) = &self.manifest.name {
-            if name.trim().is_empty() {
-                bail!("manifest field `name` must not be empty");
-            }
+        if let Some(name) = &self.manifest.name
+            && name.trim().is_empty()
+        {
+            bail!("manifest field `name` must not be empty");
         }
 
         let allow_empty_package = role == PackageRole::Root;
@@ -366,12 +366,12 @@ fn load_manifest_str(path: &Path, contents: &str) -> Result<(Manifest, Vec<Strin
 }
 
 fn discover_package_contents(root: &Path) -> Result<PackageContents> {
-    let mut contents = PackageContents::default();
-    contents.skills = discover_skills(root)?;
-    contents.agents = discover_files(root, "agents", true)?;
-    contents.rules = discover_files(root, "rules", false)?;
-    contents.commands = discover_files(root, "commands", false)?;
-    Ok(contents)
+    Ok(PackageContents {
+        skills: discover_skills(root)?,
+        agents: discover_files(root, "agents", true)?,
+        rules: discover_files(root, "rules", false)?,
+        commands: discover_files(root, "commands", false)?,
+    })
 }
 
 fn discover_skills(root: &Path) -> Result<Vec<SkillEntry>> {

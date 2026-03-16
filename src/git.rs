@@ -21,14 +21,21 @@ pub struct GitCheckout {
 
 pub fn add_dependency(url: &str, tag: &str) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to determine the current directory")?;
+    add_dependency_in_dir(&cwd, url, tag)
+}
+
+pub fn add_dependency_in_dir(project_root: &Path, url: &str, tag: &str) -> Result<()> {
     let alias = normalize_alias_from_url(url)?;
-    let checkout = ensure_git_dependency(&cwd, &alias, url, tag, true)?;
+    let checkout = ensure_git_dependency(project_root, &alias, url, tag, true)?;
     load_dependency_from_dir(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Agen package layout"))?;
 
-    let mut root = load_from_dir(&cwd, PackageRole::Root)?;
+    let mut root = load_from_dir(project_root, PackageRole::Root)?;
     if root.manifest.dependencies.contains_key(&alias) {
-        bail!("dependency `{alias}` already exists in {}", cwd.display());
+        bail!(
+            "dependency `{alias}` already exists in {}",
+            project_root.display()
+        );
     }
     root.manifest.dependencies.insert(
         alias,
@@ -39,7 +46,7 @@ pub fn add_dependency(url: &str, tag: &str) -> Result<()> {
         },
     );
 
-    write_manifest(&cwd.join(MANIFEST_FILE), &root.manifest)
+    write_manifest(&project_root.join(MANIFEST_FILE), &root.manifest)
 }
 
 pub fn ensure_git_dependency(

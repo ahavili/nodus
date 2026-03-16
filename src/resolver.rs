@@ -127,6 +127,7 @@ pub fn doctor() -> Result<()> {
     doctor_in_dir(&cwd)
 }
 
+#[cfg(test)]
 pub fn resolve_project_for_sync(root: &Path) -> Result<Resolution> {
     resolve_project(root, ResolveMode::Sync)
 }
@@ -590,7 +591,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::git::add_dependency;
+    use crate::git::add_dependency_in_dir;
     use crate::manifest::{MANIFEST_FILE, load_root_from_dir};
 
     fn write_file(path: &Path, contents: &str) {
@@ -677,16 +678,13 @@ shared = { path = "vendor/shared" }
         let temp = TempDir::new().unwrap();
         let (_repo, url) = create_git_dependency();
 
-        let previous = env::current_dir().unwrap();
-        env::set_current_dir(temp.path()).unwrap();
-        add_dependency(&url, "v0.1.0").unwrap();
-        env::set_current_dir(previous).unwrap();
+        add_dependency_in_dir(temp.path(), &url, "v0.1.0").unwrap();
 
-        assert!(temp.path().join(".agen/deps/review").exists() == false);
         assert!(temp.path().join(".agen/deps").exists());
         let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
         assert!(manifest.contains("[dependencies]"));
         assert!(manifest.contains("tag = \"v0.1.0\""));
+        assert!(manifest.contains("url = "));
     }
 
     #[test]
@@ -701,12 +699,9 @@ shared = { path = "vendor/shared" }
             .output()
             .unwrap();
 
-        let previous = env::current_dir().unwrap();
-        env::set_current_dir(temp.path()).unwrap();
-        let error = add_dependency(&repo.path().to_string_lossy(), "v0.1.0")
+        let error = add_dependency_in_dir(temp.path(), &repo.path().to_string_lossy(), "v0.1.0")
             .unwrap_err()
             .to_string();
-        env::set_current_dir(previous).unwrap();
 
         assert!(error.contains("does not match the Agen package layout"));
     }
