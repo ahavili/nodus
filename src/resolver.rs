@@ -79,7 +79,7 @@ pub fn sync_in_dir(
 ) -> Result<()> {
     let resolution = resolve_project(cwd, cache_root, ResolveMode::Sync)?;
     enforce_capabilities(&resolution, allow_high_sensitivity)?;
-    let stored_packages = snapshot_resolution(&resolution)?;
+    let stored_packages = snapshot_resolution(cache_root, &resolution)?;
     let lockfile_path = cwd.join(LOCKFILE_NAME);
     let existing_lockfile = if lockfile_path.exists() {
         Some(Lockfile::read(&lockfile_path)?)

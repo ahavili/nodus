@@ -7,7 +7,7 @@ use tempfile::NamedTempFile;
 
 use crate::resolver::Resolution;
 
-pub const STORE_ROOT: &str = ".agen/store/sha256";
+pub const STORE_ROOT: &str = "store/sha256";
 
 #[derive(Debug, Clone)]
 pub struct StoredPackage {
@@ -15,8 +15,11 @@ pub struct StoredPackage {
     pub snapshot_root: PathBuf,
 }
 
-pub fn snapshot_resolution(resolution: &Resolution) -> Result<Vec<StoredPackage>> {
-    let store_root = resolution.project_root.join(STORE_ROOT);
+pub fn snapshot_resolution(
+    cache_root: &Path,
+    resolution: &Resolution,
+) -> Result<Vec<StoredPackage>> {
+    let store_root = cache_root.join(STORE_ROOT);
     fs::create_dir_all(&store_root)
         .with_context(|| format!("failed to create store root {}", store_root.display()))?;
 
@@ -191,9 +194,15 @@ mod tests {
         );
 
         let resolution = resolve_project_for_sync(temp.path(), cache.path()).unwrap();
-        let stored = snapshot_resolution(&resolution).unwrap();
+        let stored = snapshot_resolution(cache.path(), &resolution).unwrap();
 
         assert_eq!(stored.len(), 1);
+        assert!(
+            stored[0]
+                .snapshot_root
+                .starts_with(cache.path().join(STORE_ROOT))
+        );
+        assert!(!stored[0].snapshot_root.starts_with(temp.path()));
         assert!(
             stored[0]
                 .snapshot_root
@@ -216,11 +225,11 @@ mod tests {
         );
 
         let resolution = resolve_project_for_sync(temp.path(), cache.path()).unwrap();
-        let stored = snapshot_resolution(&resolution).unwrap();
+        let stored = snapshot_resolution(cache.path(), &resolution).unwrap();
         let snapshot_root = &stored[0].snapshot_root;
 
         fs::remove_file(snapshot_root.join("rules/common/coding-style.md")).unwrap();
-        let rebuilt = snapshot_resolution(&resolution).unwrap();
+        let rebuilt = snapshot_resolution(cache.path(), &resolution).unwrap();
 
         assert_eq!(rebuilt[0].snapshot_root, *snapshot_root);
         assert!(
