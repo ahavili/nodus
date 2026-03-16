@@ -456,10 +456,9 @@ impl DependencySpec {
             .unwrap_or_else(|| DependencyComponent::ALL.to_vec())
     }
 
-    pub fn selects_component(&self, component: DependencyComponent) -> bool {
-        self.components
-            .as_ref()
-            .is_none_or(|components| components.contains(&component))
+    pub fn effective_selected_components(&self) -> Option<Vec<DependencyComponent>> {
+        let components = self.normalized_components();
+        (components.len() != DependencyComponent::ALL.len()).then_some(components)
     }
 
     pub fn source_kind(&self) -> Result<DependencySourceKind> {

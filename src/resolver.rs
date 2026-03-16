@@ -13,8 +13,8 @@ use crate::git::{
 };
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
 use crate::manifest::{
-    DependencySourceKind, DependencySpec, LoadedManifest, PackageRole, load_dependency_from_dir,
-    load_root_from_dir, write_manifest,
+    DependencyComponent, DependencySourceKind, DependencySpec, LoadedManifest, PackageRole,
+    load_dependency_from_dir, load_root_from_dir, write_manifest,
 };
 use crate::report::Reporter;
 use crate::selection::{resolve_adapter_selection, should_prompt_for_adapter};
@@ -34,6 +34,7 @@ pub struct ResolvedPackage {
     pub manifest: LoadedManifest,
     pub source: PackageSource,
     pub digest: String,
+    pub selected_components: Option<Vec<DependencyComponent>>,
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +333,7 @@ fn resolve_project(
         project_root.clone(),
         PackageSource::Root,
         PackageRole::Root,
+        None,
         &mut state,
     )?;
 
@@ -360,9 +362,12 @@ fn resolve_package(
     package_root: PathBuf,
     source: PackageSource,
     role: PackageRole,
+    selected_components: Option<Vec<DependencyComponent>>,
     state: &mut ResolverState,
 ) -> Result<ResolvedPackage> {
-    if let Some(existing) = state.resolved_by_path.get(&package_root) {
+    if let Some(existing) = state.resolved_by_path.get_mut(&package_root) {
+        existing.selected_components =
+            union_selected_components(existing.selected_components.clone(), selected_components);
         return Ok(existing.clone());
     }
 
@@ -400,6 +405,7 @@ fn resolve_package(
         manifest,
         source,
         digest,
+        selected_components,
     };
     state
         .resolved_by_path
@@ -437,6 +443,7 @@ fn resolve_dependency(
                 dependency_root,
                 source,
                 PackageRole::Dependency,
+                dependency.effective_selected_components(),
                 state,
             )
         }
@@ -461,8 +468,24 @@ fn resolve_dependency(
                 checkout.path,
                 source,
                 PackageRole::Dependency,
+                dependency.effective_selected_components(),
                 state,
             )
+        }
+    }
+}
+
+fn union_selected_components(
+    left: Option<Vec<DependencyComponent>>,
+    right: Option<Vec<DependencyComponent>>,
+) -> Option<Vec<DependencyComponent>> {
+    match (left, right) {
+        (None, _) | (_, None) => None,
+        (Some(mut left), Some(right)) => {
+            left.extend(right);
+            left.sort();
+            left.dedup();
+            Some(left)
         }
     }
 }
@@ -540,6 +563,7 @@ impl Resolution {
                 },
                 source,
                 digest: package.digest.clone(),
+                selected_components: package.selected_components.clone(),
                 skills: sorted_ids(
                     package
                         .manifest
@@ -606,6 +630,14 @@ fn sorted_ids<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {
     let mut ids: Vec<_> = ids.cloned().collect();
     ids.sort();
     ids
+}
+
+impl ResolvedPackage {
+    pub fn selects_component(&self, component: DependencyComponent) -> bool {
+        self.selected_components
+            .as_ref()
+            .is_none_or(|components| components.contains(&component))
+    }
 }
 
 fn display_path(path: &Path) -> String {
@@ -1429,6 +1461,129 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
+    fn sync_filters_dependency_outputs_by_selected_components() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared", components = ["skills"] }
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/agents/shared.md"),
+            "# Shared\n",
+        );
+        write_file(
+            &temp.path().join("vendor/shared/rules/default.rules"),
+            "allow = []\n",
+        );
+        write_file(
+            &temp.path().join("vendor/shared/commands/build.txt"),
+            "cargo test\n",
+        );
+
+        sync_all(temp.path(), cache.path());
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(dependency, "review");
+        let managed_agent_file = namespaced_file_name(dependency, "shared", "md");
+        let managed_command_file = namespaced_file_name(dependency, "build", "md");
+        let managed_claude_rule_file = namespaced_file_name(dependency, "default", "md");
+        let managed_codex_rule_file = namespaced_file_name(dependency, "default", "rules");
+
+        assert_eq!(
+            dependency.selected_components,
+            Some(vec![DependencyComponent::Skills])
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".opencode/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".opencode/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/commands/{managed_command_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".opencode/commands/{managed_command_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/rules/{managed_claude_rule_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".codex/rules/{managed_codex_rule_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".opencode/rules/{managed_claude_rule_file}"))
+                .exists()
+        );
+
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        let shared = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        assert_eq!(
+            shared.selected_components,
+            Some(vec![DependencyComponent::Skills])
+        );
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".claude/skills/review".into())
+        );
+        assert!(
+            !lockfile
+                .managed_files
+                .contains(&".claude/agents/shared.md".into())
+        );
+    }
+
+    #[test]
     fn sync_detects_existing_codex_root_and_persists_only_codex() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
@@ -1589,6 +1744,76 @@ shared = { path = "vendor/shared" }
     }
 
     #[test]
+    fn sync_prunes_outputs_when_dependency_components_are_narrowed() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/agents/shared.md"),
+            "# Shared\n",
+        );
+
+        sync_all(temp.path(), cache.path());
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(dependency, "review");
+        let managed_agent_file = namespaced_file_name(dependency, "shared", "md");
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/agents/{managed_agent_file}"))
+                .exists()
+        );
+
+        write_manifest(
+            temp.path(),
+            r#"
+[adapters]
+enabled = ["claude", "codex", "opencode"]
+
+[dependencies]
+shared = { path = "vendor/shared", components = ["skills"] }
+"#,
+        );
+
+        sync_all(temp.path(), cache.path());
+
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/agents/{managed_agent_file}"))
+                .exists()
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".opencode/agents/{managed_agent_file}"))
+                .exists()
+        );
+    }
+
+    #[test]
     fn sync_records_stable_skill_roots_in_lockfile() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();
@@ -1628,6 +1853,199 @@ shared = { path = "vendor/shared" }
                 .managed_files
                 .iter()
                 .any(|path| path.contains("iframe-ad_"))
+        );
+    }
+
+    #[test]
+    fn sync_records_selected_components_without_supported_outputs() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared", components = ["agents"] }
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/shared/agents/shared.md"),
+            "# Shared\n",
+        );
+
+        let summary =
+            sync_in_dir_with_adapters(temp.path(), cache.path(), false, false, &[Adapter::Codex])
+                .unwrap();
+        assert_eq!(summary.managed_file_count, 0);
+
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        let shared = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias == "shared")
+            .unwrap();
+        assert_eq!(
+            shared.selected_components,
+            Some(vec![DependencyComponent::Agents])
+        );
+        assert!(lockfile.managed_files.is_empty());
+        assert!(!temp.path().join(".codex/agents").exists());
+    }
+
+    #[test]
+    fn doctor_detects_lockfile_drift_when_only_components_change() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/agents/shared.md"),
+            "# Shared\n",
+        );
+
+        sync_all(temp.path(), cache.path());
+
+        write_manifest(
+            temp.path(),
+            r#"
+[adapters]
+enabled = ["claude", "codex", "opencode"]
+
+[dependencies]
+shared = { path = "vendor/shared", components = ["skills"] }
+"#,
+        );
+
+        let error = doctor_in_dir(temp.path(), cache.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("nodus.lock is out of date"));
+    }
+
+    #[test]
+    fn sync_unions_component_selection_for_duplicate_package_references() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared_agents = { path = "vendor/shared", components = ["agents"] }
+shared_skills = { path = "vendor/shared", components = ["skills"] }
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/agents/shared.md"),
+            "# Shared\n",
+        );
+
+        sync_all(temp.path(), cache.path());
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        assert_eq!(resolution.packages.len(), 2);
+        let dependency = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias != "root")
+            .unwrap();
+        let managed_skill_id = namespaced_skill_id(dependency, "review");
+        let managed_agent_file = namespaced_file_name(dependency, "shared", "md");
+        assert_eq!(
+            dependency.selected_components,
+            Some(vec![
+                DependencyComponent::Skills,
+                DependencyComponent::Agents,
+            ])
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/agents/{managed_agent_file}"))
+                .exists()
+        );
+
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        let shared = lockfile
+            .packages
+            .iter()
+            .find(|package| package.alias != "root")
+            .unwrap();
+        assert_eq!(
+            shared.selected_components,
+            Some(vec![
+                DependencyComponent::Skills,
+                DependencyComponent::Agents,
+            ])
+        );
+    }
+
+    #[test]
+    fn sync_keeps_transitive_dependencies_when_parent_components_are_narrowed() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+wrapper = { path = "vendor/wrapper", components = ["skills"] }
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/wrapper/nodus.toml"),
+            r#"
+[dependencies]
+leaf = { path = "vendor/leaf" }
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/wrapper/agents/wrapper.md"),
+            "# Wrapper\n",
+        );
+        write_skill(
+            &temp.path().join("vendor/wrapper/vendor/leaf/skills/checks"),
+            "Checks",
+        );
+
+        sync_all(temp.path(), cache.path());
+
+        let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
+        let wrapper = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "wrapper")
+            .unwrap();
+        let leaf = resolution
+            .packages
+            .iter()
+            .find(|package| package.alias == "leaf")
+            .unwrap();
+        let managed_wrapper_agent_file = namespaced_file_name(wrapper, "wrapper", "md");
+        let managed_leaf_skill_id = namespaced_skill_id(leaf, "checks");
+
+        assert_eq!(
+            wrapper.selected_components,
+            Some(vec![DependencyComponent::Skills])
+        );
+        assert!(
+            !temp
+                .path()
+                .join(format!(".claude/agents/{managed_wrapper_agent_file}"))
+                .exists()
+        );
+        assert!(
+            temp.path()
+                .join(format!(".claude/skills/{managed_leaf_skill_id}/SKILL.md"))
+                .exists()
         );
     }
 

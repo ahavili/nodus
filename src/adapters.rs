@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
+use crate::manifest::DependencyComponent;
 use crate::resolver::{PackageSource, ResolvedPackage};
 
 pub mod claude;
@@ -241,6 +242,10 @@ pub fn build_output_plan(
         );
 
         for skill in &package.manifest.discovered.skills {
+            if !package.selects_component(DependencyComponent::Skills) {
+                continue;
+            }
+
             if selected_adapters.contains(Adapter::Claude)
                 && ArtifactKind::Skill
                     .supported_adapters()
@@ -282,6 +287,10 @@ pub fn build_output_plan(
         }
 
         for agent in &package.manifest.discovered.agents {
+            if !package.selects_component(DependencyComponent::Agents) {
+                continue;
+            }
+
             if selected_adapters.contains(Adapter::Claude)
                 && ArtifactKind::Agent
                     .supported_adapters()
@@ -310,6 +319,10 @@ pub fn build_output_plan(
         }
 
         for rule in &package.manifest.discovered.rules {
+            if !package.selects_component(DependencyComponent::Rules) {
+                continue;
+            }
+
             if selected_adapters.contains(Adapter::Claude)
                 && ArtifactKind::Rule
                     .supported_adapters()
@@ -351,6 +364,10 @@ pub fn build_output_plan(
         }
 
         for command in &package.manifest.discovered.commands {
+            if !package.selects_component(DependencyComponent::Commands) {
+                continue;
+            }
+
             if selected_adapters.contains(Adapter::Claude)
                 && ArtifactKind::Command
                     .supported_adapters()

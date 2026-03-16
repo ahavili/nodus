@@ -5,11 +5,11 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::manifest::Capability;
+use crate::manifest::{Capability, DependencyComponent};
 use crate::store::write_atomic;
 
 pub const LOCKFILE_NAME: &str = "nodus.lock";
-const LOCKFILE_VERSION: u32 = 4;
+const LOCKFILE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lockfile {
@@ -27,6 +27,8 @@ pub struct LockedPackage {
     pub version_tag: Option<String>,
     pub source: LockedSource,
     pub digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_components: Option<Vec<DependencyComponent>>,
     #[serde(default)]
     pub skills: Vec<String>,
     #[serde(default)]
@@ -240,6 +242,7 @@ mod tests {
                     rev: Some("abc123".into()),
                 },
                 digest: "sha256:abc".into(),
+                selected_components: Some(vec![DependencyComponent::Skills]),
                 skills: vec!["review".into()],
                 agents: vec!["security-reviewer".into()],
                 rules: vec!["safe-shell".into()],
@@ -278,6 +281,7 @@ mod tests {
                     rev: Some("01f556abcdef".into()),
                 },
                 digest: "sha256:abc".into(),
+                selected_components: None,
                 skills: vec!["iframe-ad".into()],
                 agents: vec![],
                 rules: vec![],
@@ -320,6 +324,7 @@ mod tests {
                     rev: Some("01f556abcdef".into()),
                 },
                 digest: "sha256:abc".into(),
+                selected_components: None,
                 skills: vec![],
                 agents: vec!["security".into()],
                 rules: vec!["default".into()],
