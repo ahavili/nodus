@@ -388,31 +388,13 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path, reporter: &Reporter) -> Resu
     validate_collisions(planned_files, &owned_paths)?;
     validate_state_consistency(&owned_paths, &desired_paths, planned_files)?;
 
-    for package in &resolution.packages {
-        if let PackageSource::Git { url, rev, .. } = &package.source {
-            let checkout_path = shared_checkout_path(cache_root, url, rev)?;
-            if package.root != checkout_path {
-                bail!(
-                    "git dependency `{}` resolved to {} instead of shared checkout {}",
-                    package.alias,
-                    package.root.display(),
-                    checkout_path.display()
-                );
-            }
-            let current = current_rev(&package.root)?;
-            if current.trim() != rev {
-                bail!(
-                    "git dependency `{}` is checked out at {} instead of {}",
-                    package.alias,
-                    current.trim(),
-                    rev
-                );
-            }
-
-            let mirror_path = shared_repository_path(cache_root, url)?;
-            validate_shared_checkout(&package.root, &mirror_path, url)?;
-        }
-    }
+    resolution
+        .packages
+        .par_iter()
+        .map(|package| validate_git_package(package, cache_root))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
 
     for warning in resolution
         .warnings
@@ -425,6 +407,34 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path, reporter: &Reporter) -> Resu
     Ok(DoctorSummary {
         package_count: resolution.packages.len(),
     })
+}
+
+fn validate_git_package(package: &ResolvedPackage, cache_root: &Path) -> Result<()> {
+    let PackageSource::Git { url, rev, .. } = &package.source else {
+        return Ok(());
+    };
+
+    let checkout_path = shared_checkout_path(cache_root, url, rev)?;
+    if package.root != checkout_path {
+        bail!(
+            "git dependency `{}` resolved to {} instead of shared checkout {}",
+            package.alias,
+            package.root.display(),
+            checkout_path.display()
+        );
+    }
+    let current = current_rev(&package.root)?;
+    if current.trim() != rev {
+        bail!(
+            "git dependency `{}` is checked out at {} instead of {}",
+            package.alias,
+            current.trim(),
+            rev
+        );
+    }
+
+    let mirror_path = shared_repository_path(cache_root, url)?;
+    validate_shared_checkout(&package.root, &mirror_path, url)
 }
 
 fn resolve_project(
