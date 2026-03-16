@@ -7,6 +7,7 @@ use anyhow::Error;
 
 const LABEL_WIDTH: usize = 12;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ColorMode {
     #[default]

@@ -8,9 +8,18 @@ use crate::adapters::Adapter;
 use crate::report::Reporter;
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "Nodus manages project-scoped agent packages", long_about = None)]
+#[command(
+    author,
+    version,
+    about = "Manage project-scoped agent packages",
+    long_about = "Nodus resolves agent packages from local paths and Git tags, locks exact revisions, and writes managed runtime outputs for supported adapters."
+)]
 struct Cli {
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Override the shared cache root for repository mirrors, checkouts, and snapshots"
+    )]
     cache_path: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -19,25 +28,46 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    #[command(about = "Add a dependency and run sync")]
     Add {
+        #[arg(help = "Git URL, local path, or GitHub shortcut like owner/repo")]
         url: String,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Pin a specific Git tag instead of resolving the latest tag"
+        )]
         tag: Option<String>,
-        #[arg(long, value_enum)]
+        #[arg(
+            long,
+            value_enum,
+            help = "Select one or more adapters to persist for this repository"
+        )]
         adapter: Vec<Adapter>,
     },
+    #[command(about = "Remove a dependency and prune its managed outputs")]
     Remove {
+        #[arg(help = "Dependency alias or repository reference to remove")]
         package: String,
     },
+    #[command(about = "Create a minimal nodus.toml and example skill")]
     Init,
+    #[command(about = "Resolve dependencies and write managed runtime outputs")]
     Sync {
-        #[arg(long)]
+        #[arg(long, help = "Fail if nodus.lock would change")]
         locked: bool,
-        #[arg(long = "allow-high-sensitivity")]
+        #[arg(
+            long = "allow-high-sensitivity",
+            help = "Allow packages that declare high-sensitivity capabilities"
+        )]
         allow_high_sensitivity: bool,
-        #[arg(long, value_enum)]
+        #[arg(
+            long,
+            value_enum,
+            help = "Override and persist the adapter selection for this repository"
+        )]
         adapter: Vec<Adapter>,
     },
+    #[command(about = "Validate lockfile, cache, and managed output consistency")]
     Doctor,
 }
 
@@ -265,6 +295,31 @@ mod tests {
         let error = Cli::try_parse_from(["nodus", "uninstall", "playbook_ios"]).unwrap_err();
 
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn root_help_describes_commands() {
+        let help = <Cli as clap::CommandFactory>::command()
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains("Nodus resolves agent packages from local paths and Git tags"));
+        assert!(help.contains("Add a dependency and run sync"));
+        assert!(help.contains("Validate lockfile, cache, and managed output consistency"));
+    }
+
+    #[test]
+    fn add_help_describes_arguments() {
+        let mut root = <Cli as clap::CommandFactory>::command();
+        let help = root
+            .find_subcommand_mut("add")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+
+        assert!(help.contains("Git URL, local path, or GitHub shortcut like owner/repo"));
+        assert!(help.contains("Pin a specific Git tag instead of resolving the latest tag"));
+        assert!(help.contains("Select one or more adapters to persist for this repository"));
     }
 
     #[test]
