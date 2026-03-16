@@ -18,8 +18,8 @@ The current MVP supports:
 - `agen add <url>` with automatic latest-tag selection
 - `agen add <url> --tag <tag>` for explicit pinning
 - Shared Git repository cache with shared cached checkouts by revision
+- Shared content-addressed snapshots in the cache root
 - Deterministic `agentpack.lock`
-- Content-addressed snapshots under `.agen/store/sha256/`
 - Managed output emission for:
   - `.claude/skills/<id>_<source-id>/`
   - `.codex/skills/<id>_<source-id>/`
@@ -267,19 +267,20 @@ This is especially important for OpenCode. Agen manages `.opencode/instructions/
 Resolved packages are snapshotted under:
 
 ```text
-.agen/store/sha256/<digest>/
+<cache-root>/store/sha256/<digest>/
 ```
 
 Sync emits from those snapshots rather than directly from mutable working trees.
 
-## Shared Git Cache
+## Shared Cache
 
-Git dependencies use two on-disk locations:
+Cached dependency data uses three on-disk locations:
 
 - Shared remote mirrors live under `<cache-root>/repositories/<repo-name>-<url-hash>.git`
 - Shared cached checkouts live under `<cache-root>/checkouts/<repo-name>-<url-hash>/<rev>/`
+- Shared content-addressed snapshots live under `<cache-root>/store/sha256/<digest>/`
 
-This keeps all fetched and materialized Git dependency state shared across projects. Project-specific state stays limited to each repo's lockfile, content-addressed store, and emitted runtime outputs.
+This keeps fetched repositories, materialized checkouts, and package snapshots shared across projects. Project-specific state stays limited to each repo's lockfile and emitted runtime outputs.
 
 ## Runtime Output Mapping
 
