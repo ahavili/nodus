@@ -244,7 +244,10 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path, reporter: &Reporter) -> Resu
     let root = load_root_from_dir(cwd)?;
     let selection = resolve_adapter_selection(cwd, &root.manifest, &[], false)?;
     let selected_adapters = Adapters::from_slice(&selection.adapters);
-    reporter.status("Checking", "manifest, lockfile, cache, and managed outputs")?;
+    reporter.status(
+        "Checking",
+        "manifest, lockfile, shared store, and managed outputs",
+    )?;
     let resolution = resolve_project(cwd, cache_root, ResolveMode::Doctor, reporter)?;
     let lockfile_path = cwd.join(LOCKFILE_NAME);
     if !lockfile_path.exists() {

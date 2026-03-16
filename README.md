@@ -15,7 +15,7 @@ Agent customization tends to drift because every runtime expects a different on-
   - `commands/`
 - Pin direct dependencies by Git tag in `nodus.toml`
 - Lock exact Git revisions and managed outputs in `nodus.lock`
-- Reuse a shared cache of repository mirrors, checkouts, and content-addressed snapshots across projects
+- Reuse a shared store of repository mirrors, checkouts, and content-addressed snapshots across projects
 - Emit only the runtime outputs your repo actually needs
 - Protect unmanaged files from accidental overwrite
 - Gate high-sensitivity packages behind explicit opt-in
@@ -29,7 +29,7 @@ Nodus currently supports:
 - Deterministic sync with lock state stored in `nodus.lock`
 - Managed output emission for Claude, Codex, and OpenCode
 - Repo-level adapter selection that can be inferred, chosen explicitly, or persisted
-- Validation of cache state, lockfile state, and managed files with `nodus doctor`
+- Validation of shared store state, lockfile state, and managed files with `nodus doctor`
 
 Not implemented yet:
 
@@ -59,13 +59,15 @@ After installation, run:
 nodus <command>
 ```
 
-By default, Nodus stores shared mirrors, checkouts, and snapshots in the platform cache directory for the app. On macOS, that is:
+By default, Nodus stores shared mirrors, checkouts, and snapshots in the platform's local application data directory:
 
 ```text
-~/Library/Caches/nodus/
+macOS:   ~/Library/Application Support/nodus/
+Linux:   ~/.local/state/nodus/              (or $XDG_STATE_HOME/nodus/)
+Windows: %LOCALAPPDATA%\nodus\
 ```
 
-You can override that location for any command with `--cache-path <path>`.
+You can override that location for any command with `--store-path <path>`.
 
 ## Quick Start
 
@@ -99,7 +101,7 @@ Sync dependencies into managed runtime outputs:
 nodus sync
 ```
 
-Validate that the repo, lockfile, managed outputs, and shared cache are consistent:
+Validate that the repo, lockfile, managed outputs, and shared store are consistent:
 
 ```bash
 nodus doctor
@@ -123,10 +125,10 @@ Remove a configured dependency and prune its managed outputs:
 nodus remove superpowers
 ```
 
-Use a custom shared cache root when needed:
+Use a custom shared store root when needed:
 
 ```bash
-nodus --cache-path /tmp/nodus-cache sync
+nodus --store-path /tmp/nodus-store sync
 ```
 
 ## Contributing
@@ -243,18 +245,18 @@ nodus add <url> --adapter codex
 nodus add <url> --adapter claude --adapter opencode
 ```
 
-You can also override the shared repository cache root for this command:
+You can also override the shared repository store root for this command:
 
 ```bash
-nodus --cache-path /tmp/nodus-cache add <url>
+nodus --store-path /tmp/nodus-store add <url>
 ```
 
 Behavior:
 
 - accepts a full Git URL or a GitHub shortcut like `obra/superpowers`
 - infers the dependency alias from the repo name
-- fetches a shared bare mirror into the cache root
-- materializes a shared cached checkout for the resolved revision under the cache root
+- fetches a shared bare mirror into the shared store root
+- materializes a shared checkout for the resolved revision under the shared store root
 - resolves the latest tag when `--tag` is omitted
 - checks out the resolved tag
 - validates the discovered package layout or dependency wrapper manifest
@@ -285,7 +287,7 @@ Resolves the root project plus configured dependencies, recursively follows nest
 
 Options:
 
-- `--cache-path <path>`: override the shared Git repository cache root
+- `--store-path <path>`: override the shared repository store root
 - `--locked`: fail if `nodus.lock` would change
 - `--allow-high-sensitivity`: allow packages that declare `high` sensitivity capabilities
 - `--adapter <claude|codex|opencode>`: override and persist adapter selection for this repo
@@ -295,8 +297,8 @@ Options:
 Checks that:
 
 - the root manifest parses
-- shared cached dependency checkouts exist in the cache root
-- shared repository mirrors exist in the cache root with the expected origin URL
+- shared dependency checkouts exist in the shared store root
+- shared repository mirrors exist in the shared store root with the expected origin URL
 - discovered layouts are valid
 - Git dependencies are at the expected locked revision
 - `nodus.lock` is up to date
@@ -330,18 +332,18 @@ Managed files are tracked in `nodus.lock`. During sync, Nodus:
 Resolved packages are snapshotted under:
 
 ```text
-<cache-root>/store/sha256/<digest>/
+<store-root>/store/sha256/<digest>/
 ```
 
 Sync emits from those snapshots rather than directly from mutable working trees.
 
-## Shared Cache
+## Shared Store
 
-Cached dependency data uses three on-disk locations:
+Shared dependency state uses three on-disk locations:
 
-- Shared remote mirrors live under `<cache-root>/repositories/<repo-name>-<url-hash>.git`
-- Shared cached checkouts live under `<cache-root>/checkouts/<repo-name>-<url-hash>/<rev>/`
-- Shared content-addressed snapshots live under `<cache-root>/store/sha256/<digest>/`
+- Shared remote mirrors live under `<store-root>/repositories/<repo-name>-<url-hash>.git`
+- Shared checkouts live under `<store-root>/checkouts/<repo-name>-<url-hash>/<rev>/`
+- Shared content-addressed snapshots live under `<store-root>/store/sha256/<digest>/`
 
 This keeps fetched repositories, materialized checkouts, and package snapshots shared across projects. Project-specific state stays limited to each repo's lockfile and emitted runtime outputs.
 

@@ -342,7 +342,7 @@ fn ensure_shared_repository(
     if mirror_path.exists() {
         if !is_bare_repository(mirror_path)? {
             bail!(
-                "shared repository cache at {} is not a bare git repository",
+                "shared repository mirror at {} is not a bare git repository",
                 mirror_path.display()
             );
         }
@@ -350,7 +350,7 @@ fn ensure_shared_repository(
         let remote_url = git_output(mirror_path, ["remote", "get-url", "origin"])?;
         if remote_url.trim() != normalized_url {
             bail!(
-                "shared repository cache at {} has remote `{}` instead of `{}`",
+                "shared repository mirror at {} has remote `{}` instead of `{}`",
                 mirror_path.display(),
                 remote_url.trim(),
                 normalized_url
@@ -358,7 +358,10 @@ fn ensure_shared_repository(
         }
 
         if allow_network {
-            reporter.status("Updating", format!("git cache for {normalized_url}"))?;
+            reporter.status(
+                "Updating",
+                format!("repository mirror for {normalized_url}"),
+            )?;
             git_run(mirror_path, ["fetch", "--tags", "--prune", "origin"])?;
         }
         return Ok(());
@@ -366,7 +369,7 @@ fn ensure_shared_repository(
 
     if !allow_network {
         bail!(
-            "missing shared repository cache for `{normalized_url}` at {}",
+            "missing shared repository mirror for `{normalized_url}` at {}",
             mirror_path.display()
         );
     }
@@ -378,7 +381,10 @@ fn ensure_shared_repository(
         )
     })?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    reporter.status("Updating", format!("git cache for {normalized_url}"))?;
+    reporter.status(
+        "Updating",
+        format!("repository mirror for {normalized_url}"),
+    )?;
     git_run(
         parent,
         [
@@ -438,7 +444,7 @@ fn ensure_shared_checkout(
     )
     .with_context(|| {
         format!(
-            "failed to materialize shared checkout {} from shared cache {}",
+            "failed to materialize shared checkout {} from shared mirror {}",
             checkout_path.display(),
             mirror_path.display(),
         )
@@ -471,7 +477,7 @@ pub fn validate_shared_checkout(
     let common_dir = PathBuf::from(common_dir.trim());
     let expected_common_dir = mirror_path
         .canonicalize()
-        .with_context(|| format!("failed to access shared cache {}", mirror_path.display()))?;
+        .with_context(|| format!("failed to access shared mirror {}", mirror_path.display()))?;
     let actual_common_dir = common_dir.canonicalize().with_context(|| {
         format!(
             "failed to resolve git common dir for shared checkout {}",
@@ -481,7 +487,7 @@ pub fn validate_shared_checkout(
 
     if actual_common_dir != expected_common_dir {
         bail!(
-            "shared checkout at {} is not backed by shared cache {}",
+            "shared checkout at {} is not backed by shared mirror {}",
             checkout_path.display(),
             mirror_path.display()
         );

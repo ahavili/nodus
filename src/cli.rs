@@ -16,11 +16,12 @@ use crate::report::Reporter;
 )]
 struct Cli {
     #[arg(
-        long,
+        long = "store-path",
+        alias = "cache-path",
         global = true,
-        help = "Override the shared cache root for repository mirrors, checkouts, and snapshots"
+        help = "Override the shared storage root for repository mirrors, checkouts, and snapshots"
     )]
-    cache_path: Option<PathBuf>,
+    store_path: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -67,7 +68,7 @@ enum Command {
         )]
         adapter: Vec<Adapter>,
     },
-    #[command(about = "Validate lockfile, cache, and managed output consistency")]
+    #[command(about = "Validate lockfile, shared store, and managed output consistency")]
     Doctor,
 }
 
@@ -89,8 +90,8 @@ pub fn run() -> ExitCode {
 
 fn run_command(cli: Cli, reporter: &Reporter) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
-    let cache_root = crate::cache::resolve_cache_root(cli.cache_path.as_deref())?;
-    run_command_in_dir(cli.command, &cwd, &cache_root, reporter)
+    let store_root = crate::cache::resolve_store_root(cli.store_path.as_deref())?;
+    run_command_in_dir(cli.command, &cwd, &store_root, reporter)
 }
 
 fn run_command_in_dir(
@@ -305,7 +306,7 @@ mod tests {
 
         assert!(help.contains("Nodus resolves agent packages from local paths and Git tags"));
         assert!(help.contains("Add a dependency and run sync"));
-        assert!(help.contains("Validate lockfile, cache, and managed output consistency"));
+        assert!(help.contains("Validate lockfile, shared store, and managed output consistency"));
     }
 
     #[test]

@@ -192,12 +192,12 @@ mod tests {
         let buffer = SharedBuffer::default();
         let reporter = Reporter::sink(ColorMode::Never, buffer.clone());
 
-        reporter.note("using cached checkout").unwrap();
+        reporter.note("using shared checkout").unwrap();
         reporter.finish("1 package in 0.01s").unwrap();
 
         assert_eq!(
             buffer.contents(),
-            "note: using cached checkout\n    Finished 1 package in 0.01s\n"
+            "note: using shared checkout\n    Finished 1 package in 0.01s\n"
         );
     }
 
