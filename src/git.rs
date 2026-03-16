@@ -19,14 +19,15 @@ pub struct GitCheckout {
     pub rev: String,
 }
 
-pub fn add_dependency(url: &str, tag: &str) -> Result<()> {
+pub fn add_dependency(url: &str, tag: Option<&str>) -> Result<()> {
     let cwd = std::env::current_dir().context("failed to determine the current directory")?;
     add_dependency_in_dir(&cwd, url, tag)
 }
 
-pub fn add_dependency_in_dir(project_root: &Path, url: &str, tag: &str) -> Result<()> {
-    let alias = normalize_alias_from_url(url)?;
-    let checkout = ensure_git_dependency(project_root, &alias, url, tag, true)?;
+pub fn add_dependency_in_dir(project_root: &Path, url: &str, tag: Option<&str>) -> Result<()> {
+    let normalized_url = normalize_git_url(url);
+    let alias = normalize_alias_from_url(&normalized_url)?;
+    let checkout = ensure_git_dependency(project_root, &alias, &normalized_url, tag, true)?;
     load_dependency_from_dir(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Agen package layout"))?;
 
@@ -40,9 +41,9 @@ pub fn add_dependency_in_dir(project_root: &Path, url: &str, tag: &str) -> Resul
     root.manifest.dependencies.insert(
         alias,
         DependencySpec {
-            url: Some(url.to_string()),
+            url: Some(checkout.url.clone()),
             path: None,
-            tag: Some(tag.to_string()),
+            tag: Some(checkout.tag.clone()),
         },
     );
 
@@ -53,9 +54,10 @@ pub fn ensure_git_dependency(
     project_root: &Path,
     alias: &str,
     url: &str,
-    tag: &str,
+    tag: Option<&str>,
     allow_network: bool,
 ) -> Result<GitCheckout> {
+    let normalized_url = normalize_git_url(url);
     let deps_root = project_root.join(DEPS_ROOT);
     fs::create_dir_all(&deps_root)
         .with_context(|| format!("failed to create {}", deps_root.display()))?;
@@ -63,7 +65,7 @@ pub fn ensure_git_dependency(
 
     if checkout_path.exists() {
         let remote_url = git_output(&checkout_path, ["remote", "get-url", "origin"])?;
-        if remote_url.trim() != url {
+        if remote_url.trim() != normalized_url {
             bail!(
                 "dependency `{alias}` already exists at {} with remote `{}`",
                 checkout_path.display(),
@@ -82,19 +84,27 @@ pub fn ensure_git_dependency(
         }
         git_run(
             project_root,
-            ["clone", url, checkout_path.to_string_lossy().as_ref()],
+            [
+                "clone",
+                &normalized_url,
+                checkout_path.to_string_lossy().as_ref(),
+            ],
         )?;
     }
 
-    let rev = resolve_tag_to_rev(&checkout_path, tag)?;
+    let resolved_tag = match tag {
+        Some(value) => value.to_string(),
+        None => latest_tag(&checkout_path)?,
+    };
+    let rev = resolve_tag_to_rev(&checkout_path, &resolved_tag)?;
     if allow_network {
         git_run(&checkout_path, ["checkout", "--detach", &rev])?;
     }
 
     Ok(GitCheckout {
         path: checkout_path,
-        url: url.to_string(),
-        tag: tag.to_string(),
+        url: normalized_url,
+        tag: resolved_tag,
         rev,
     })
 }
@@ -107,8 +117,49 @@ pub fn resolve_tag_to_rev(path: &Path, tag: &str) -> Result<String> {
     git_output(path, ["rev-parse", &format!("{tag}^{{commit}}")])
 }
 
+pub fn latest_tag(path: &Path) -> Result<String> {
+    let tags = git_output(
+        path,
+        [
+            "for-each-ref",
+            "--sort=-v:refname",
+            "--format=%(refname:strip=2)",
+            "refs/tags",
+        ],
+    )?;
+    tags.lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+        .ok_or_else(|| anyhow!("no git tags found in {}", path.display()))
+}
+
+pub fn normalize_git_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("git@")
+        || trimmed.starts_with("ssh://")
+        || trimmed.starts_with('/')
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+    {
+        return trimmed.to_string();
+    }
+
+    if let Some((owner, repo)) = trimmed.split_once('/')
+        && !owner.is_empty()
+        && !repo.is_empty()
+        && !repo.contains('/')
+    {
+        return format!("https://github.com/{owner}/{repo}");
+    }
+
+    trimmed.to_string()
+}
+
 pub fn normalize_alias_from_url(url: &str) -> Result<String> {
-    let trimmed = url.trim_end_matches('/').trim_end_matches(".git");
+    let normalized = normalize_git_url(url);
+    let trimmed = normalized.trim_end_matches('/').trim_end_matches(".git");
     let tail = trimmed
         .rsplit('/')
         .next()
@@ -169,6 +220,40 @@ fn git_output<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String> {
 mod tests {
     use super::*;
 
+    use std::io::Write;
+    use std::process::Command;
+
+    use tempfile::TempDir;
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(contents.as_bytes()).unwrap();
+    }
+
+    fn init_git_repo(path: &Path) {
+        let run = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        run(&["init"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test User"]);
+        run(&["add", "."]);
+        run(&["commit", "-m", "initial"]);
+    }
+
     #[test]
     fn normalizes_repo_names_into_aliases() {
         assert_eq!(
@@ -179,5 +264,43 @@ mod tests {
             normalize_alias_from_url("git@github.com:foo/bar_baz.git").unwrap(),
             "bar_baz"
         );
+        assert_eq!(
+            normalize_alias_from_url("wenext-limited/playbook-ios").unwrap(),
+            "playbook_ios"
+        );
+    }
+
+    #[test]
+    fn expands_github_shortcuts() {
+        assert_eq!(
+            normalize_git_url("wenext-limited/playbook-ios"),
+            "https://github.com/wenext-limited/playbook-ios"
+        );
+        assert_eq!(
+            normalize_git_url("https://github.com/wenext-limited/playbook-ios"),
+            "https://github.com/wenext-limited/playbook-ios"
+        );
+    }
+
+    #[test]
+    fn picks_latest_tag_by_version_sort() {
+        let temp = TempDir::new().unwrap();
+        write_file(&temp.path().join("README.md"), "hello\n");
+        init_git_repo(temp.path());
+
+        for tag in ["v0.1.0", "v1.2.0", "v0.9.0"] {
+            let output = Command::new("git")
+                .args(["tag", tag])
+                .current_dir(temp.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        assert_eq!(latest_tag(temp.path()).unwrap(), "v1.2.0");
     }
 }

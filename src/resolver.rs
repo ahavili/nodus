@@ -310,8 +310,13 @@ fn resolve_dependency(
         DependencySourceKind::Git => {
             let url = dependency.url.as_deref().unwrap_or_default();
             let tag = dependency.tag.as_deref().unwrap_or_default();
-            let checkout =
-                ensure_git_dependency(project_root, alias, url, tag, mode == ResolveMode::Sync)?;
+            let checkout = ensure_git_dependency(
+                project_root,
+                alias,
+                url,
+                Some(tag),
+                mode == ResolveMode::Sync,
+            )?;
             let source = PackageSource::Git {
                 url: checkout.url,
                 tag: checkout.tag,
@@ -678,13 +683,39 @@ shared = { path = "vendor/shared" }
         let temp = TempDir::new().unwrap();
         let (_repo, url) = create_git_dependency();
 
-        add_dependency_in_dir(temp.path(), &url, "v0.1.0").unwrap();
+        add_dependency_in_dir(temp.path(), &url, Some("v0.1.0")).unwrap();
 
         assert!(temp.path().join(".agen/deps").exists());
         let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
         assert!(manifest.contains("[dependencies]"));
         assert!(manifest.contains("tag = \"v0.1.0\""));
         assert!(manifest.contains("url = "));
+    }
+
+    #[test]
+    fn add_dependency_uses_latest_tag_when_not_provided() {
+        let temp = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        write_skill(&repo.path().join("skills/review"), "Review");
+        init_git_repo(repo.path());
+
+        for tag in ["v0.1.0", "v1.2.0", "v0.9.0"] {
+            let output = Command::new("git")
+                .args(["tag", tag])
+                .current_dir(repo.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        add_dependency_in_dir(temp.path(), &repo.path().to_string_lossy(), None).unwrap();
+
+        let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
+        assert!(manifest.contains("tag = \"v1.2.0\""));
     }
 
     #[test]
@@ -699,9 +730,10 @@ shared = { path = "vendor/shared" }
             .output()
             .unwrap();
 
-        let error = add_dependency_in_dir(temp.path(), &repo.path().to_string_lossy(), "v0.1.0")
-            .unwrap_err()
-            .to_string();
+        let error =
+            add_dependency_in_dir(temp.path(), &repo.path().to_string_lossy(), Some("v0.1.0"))
+                .unwrap_err()
+                .to_string();
 
         assert!(error.contains("does not match the Agen package layout"));
     }

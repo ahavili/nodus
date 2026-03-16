@@ -13,7 +13,7 @@ enum Command {
     Add {
         url: String,
         #[arg(long)]
-        tag: String,
+        tag: Option<String>,
     },
     Init,
     Sync {
@@ -29,7 +29,7 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Add { url, tag } => crate::git::add_dependency(&url, &tag),
+        Command::Add { url, tag } => crate::git::add_dependency(&url, tag.as_deref()),
         Command::Init => crate::manifest::scaffold_init(),
         Command::Sync {
             locked,

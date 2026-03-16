@@ -15,7 +15,8 @@ The current MVP supports:
   - `commands/`
 - Minimal root `agentpack.toml`
 - Git dependencies pinned by `tag` in the manifest and exact `rev` in the lockfile
-- `agen add <url> --tag <tag>`
+- `agen add <url>` with automatic latest-tag selection
+- `agen add <url> --tag <tag>` for explicit pinning
 - Managed Git clones under `.agen/deps/`
 - Deterministic `agentpack.lock`
 - Content-addressed snapshots under `.agen/store/sha256/`
@@ -68,7 +69,7 @@ That creates:
 Add a Git dependency by tag:
 
 ```bash
-agen add https://github.com/wenext-limited/playbook-ios --tag v0.1.0
+agen add wenext-limited/playbook-ios
 ```
 
 Sync discovered content into managed runtime outputs:
@@ -162,21 +163,31 @@ Discovered `commands/` content is currently validated and locked, but not emitte
 ### `agen add`
 
 ```bash
+agen add <url>
+```
+
+By default, Agen resolves the latest Git tag and writes that tag into `agentpack.toml`.
+
+You can still pin a specific tag explicitly:
+
+```bash
 agen add <url> --tag <tag>
 ```
 
 Behavior:
 
+- accepts a full Git URL or a GitHub shortcut like `wenext-limited/playbook-ios`
 - infers the dependency alias from the repo name
 - clones into `.agen/deps/<alias>/`
-- checks out the requested tag
+- resolves the latest tag when `--tag` is omitted
+- checks out the resolved tag
 - validates the discovered package layout
 - creates or updates `agentpack.toml`
 
 Example:
 
 ```bash
-agen add https://github.com/wenext-limited/playbook-ios --tag v0.1.0
+agen add wenext-limited/playbook-ios
 ```
 
 ### `agen init`
