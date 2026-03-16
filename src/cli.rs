@@ -5,16 +5,13 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 use crate::adapters::Adapter;
-use crate::report::{ColorMode, Reporter};
+use crate::report::Reporter;
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "Nodus manages project-scoped agent packages", long_about = None)]
 struct Cli {
     #[arg(long, global = true)]
     cache_path: Option<PathBuf>,
-
-    #[arg(long, global = true, value_enum, default_value_t = ColorMode::Auto)]
-    color: ColorMode,
 
     #[command(subcommand)]
     command: Command,
@@ -46,7 +43,7 @@ enum Command {
 
 pub fn run() -> ExitCode {
     let cli = Cli::parse();
-    let reporter = Reporter::stderr(cli.color);
+    let reporter = Reporter::stderr();
     let result = run_command(cli, &reporter);
 
     match result {
@@ -292,13 +289,6 @@ mod tests {
             }
             other => panic!("expected add command, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn parses_color_flag() {
-        let cli = Cli::try_parse_from(["nodus", "--color", "never", "doctor"]).unwrap();
-
-        assert_eq!(cli.color, super::ColorMode::Never);
     }
 
     #[test]

@@ -4,11 +4,10 @@ use std::io::{self, Write};
 use anstream::{AutoStream, ColorChoice};
 use anstyle::{AnsiColor, Style};
 use anyhow::Error;
-use clap::ValueEnum;
 
 const LABEL_WIDTH: usize = 12;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ColorMode {
     #[default]
     Auto,
@@ -32,8 +31,8 @@ pub struct Reporter {
 }
 
 impl Reporter {
-    pub fn stderr(mode: ColorMode) -> Self {
-        let stream = AutoStream::new(io::stderr().lock(), mode.choice());
+    pub fn stderr() -> Self {
+        let stream = AutoStream::new(io::stderr().lock(), ColorMode::Auto.choice());
         let color_enabled = !matches!(stream.current_choice(), ColorChoice::Never);
         Self {
             writer: RefCell::new(Box::new(stream)),
