@@ -34,6 +34,7 @@ nodus add obra/superpowers --adapter codex
 nodus add obra/superpowers --adapter codex --component skills
 nodus info obra/superpowers
 nodus outdated
+nodus update
 nodus doctor
 ```
 
@@ -46,7 +47,7 @@ The install flow is designed to stay predictable:
 - unmanaged files are never overwritten
 - high-sensitivity packages require explicit opt-in
 
-Package authors can still publish content from `skills/`, `agents/`, `rules/`, and `commands/`, but as a consumer you mostly interact with `nodus add`, `nodus info`, `nodus outdated`, `nodus sync`, and `nodus doctor`.
+Package authors can still publish content from `skills/`, `agents/`, `rules/`, and `commands/`, but as a consumer you mostly interact with `nodus add`, `nodus info`, `nodus outdated`, `nodus update`, `nodus sync`, and `nodus doctor`.
 
 ## Install
 
@@ -407,6 +408,17 @@ Behavior:
 - tagged Git dependencies are compared against the newest available tag in the shared mirror
 - branch Git dependencies are compared against the currently locked revision in `nodus.lock`
 - path dependencies are reported as local paths and are never marked outdated
+
+### `nodus update`
+
+Updates direct dependencies from `nodus.toml` and then runs the normal sync flow.
+
+Behavior:
+
+- tagged Git dependencies are rewritten to the newest available tag
+- branch Git dependencies keep their branch pin, refresh to the latest branch head, and update the optional semantic `version` field when present
+- path dependencies are left as local paths and included in the normal sync pass
+- `--allow-high-sensitivity` mirrors `nodus sync` for projects that already opt into high-sensitivity capabilities
 
 ### `nodus sync`
 

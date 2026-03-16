@@ -11,6 +11,7 @@ mod resolver;
 mod review;
 mod selection;
 mod store;
+mod update;
 
 fn main() -> std::process::ExitCode {
     cli::run()

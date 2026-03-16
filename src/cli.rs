@@ -95,6 +95,14 @@ enum Command {
     },
     #[command(about = "Check direct dependencies for newer tags or branch head changes")]
     Outdated,
+    #[command(about = "Update direct dependencies and resync managed outputs")]
+    Update {
+        #[arg(
+            long = "allow-high-sensitivity",
+            help = "Allow packages that declare high-sensitivity capabilities"
+        )]
+        allow_high_sensitivity: bool,
+    },
     #[command(about = "Create a minimal nodus.toml and example skill")]
     Init,
     #[command(about = "Resolve dependencies and write managed runtime outputs")]
@@ -230,6 +238,21 @@ fn run_command_in_dir(
                 )
             };
             reporter.finish(outcome)?;
+            Ok(())
+        }
+        Command::Update {
+            allow_high_sensitivity,
+        } => {
+            let summary = crate::update::update_direct_dependencies_in_dir(
+                cwd,
+                cache_root,
+                allow_high_sensitivity,
+                reporter,
+            )?;
+            reporter.finish(format!(
+                "updated {} direct dependencies; wrote {} managed files",
+                summary.updated_count, summary.managed_file_count
+            ))?;
             Ok(())
         }
         Command::Init => {
@@ -471,6 +494,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_update_subcommand() {
+        let cli = Cli::try_parse_from(["nodus", "update", "--allow-high-sensitivity"]).unwrap();
+
+        match cli.command {
+            Command::Update {
+                allow_high_sensitivity,
+            } => assert!(allow_high_sensitivity),
+            other => panic!("expected update command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn root_help_describes_commands() {
         let help = <Cli as clap::CommandFactory>::command()
             .render_long_help()
@@ -480,6 +515,7 @@ mod tests {
         assert!(help.contains("Add a dependency and run sync"));
         assert!(help.contains("Display resolved package metadata"));
         assert!(help.contains("Check direct dependencies for newer tags or branch head changes"));
+        assert!(help.contains("Update direct dependencies and resync managed outputs"));
         assert!(help.contains(
             "Use an AI review agent to assess whether a package graph looks safe to use"
         ));
@@ -681,5 +717,37 @@ justification = "Run checks."
         assert!(output.contains("Checking"));
         assert!(output.contains("Finished"));
         assert!(output.contains("project state is consistent"));
+    }
+
+    #[test]
+    fn update_command_emits_updating_and_finished_lines() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let (_repo, url) = create_git_dependency();
+
+        run_command_in_dir(
+            Command::Add {
+                url,
+                tag: Some("v0.1.0".into()),
+                adapter: vec![Adapter::Codex],
+                component: vec![],
+            },
+            temp.path(),
+            cache.path(),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let output = run_command_output(
+            Command::Update {
+                allow_high_sensitivity: false,
+            },
+            temp.path(),
+            cache.path(),
+        );
+
+        assert!(output.contains("Checking"));
+        assert!(output.contains("Resolving"));
+        assert!(output.contains("Finished"));
     }
 }
