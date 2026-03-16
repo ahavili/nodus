@@ -1401,6 +1401,61 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
     }
 
     #[test]
+    fn add_dependency_writes_marketplace_version_alongside_default_branch() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+
+        let wrapper = TempDir::new().unwrap();
+        write_marketplace(
+            wrapper.path(),
+            r#"{
+  "plugins": [
+    {
+      "name": "Axiom",
+      "version": "2.34.0",
+      "source": "./.claude-plugin/plugins/axiom"
+    }
+  ]
+}"#,
+        );
+        write_skill(
+            &wrapper
+                .path()
+                .join(".claude-plugin/plugins/axiom/skills/review"),
+            "Review",
+        );
+        write_claude_plugin_json(
+            &wrapper.path().join(".claude-plugin/plugins/axiom"),
+            "2.34.0",
+        );
+        init_git_repo(wrapper.path());
+        rename_current_branch(wrapper.path(), "main");
+
+        add_dependency_in_dir_with_adapters(
+            temp.path(),
+            cache.path(),
+            &wrapper.path().to_string_lossy(),
+            None,
+            &Adapter::ALL,
+            &[],
+        )
+        .unwrap();
+
+        let manifest = load_root_from_dir(temp.path()).unwrap();
+        let dependency = manifest.manifest.dependencies.values().next().unwrap();
+        assert_eq!(dependency.tag, None);
+        assert_eq!(dependency.branch.as_deref(), Some("main"));
+        assert_eq!(
+            dependency
+                .version
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("2.34.0")
+        );
+    }
+
+    #[test]
     fn add_dependency_syncs_path_dependencies_inside_manifest_only_wrapper_repo() {
         let temp = TempDir::new().unwrap();
         let cache = cache_dir();

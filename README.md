@@ -7,7 +7,7 @@
 <p align="center"><strong>Add agent packages to your repo with one command.</strong></p>
 
 <p align="center">
-  Resolve from Git tags or local paths, lock exact revisions, snapshot package contents,
+  Resolve from Git refs or local paths, lock exact revisions, snapshot package contents,
   and emit managed runtime files for Claude, Codex, and OpenCode.
 </p>
 
@@ -172,7 +172,7 @@ After setup, your repo has a pinned dependency in `nodus.toml`, exact resolved s
 Nodus currently supports:
 
 - Local path dependencies
-- Git dependencies resolved from tags
+- Git dependencies resolved from tags or branches
 - Deterministic sync with lock state stored in `nodus.lock`
 - Managed output emission for Claude, Codex, and OpenCode
 - Repo-level adapter selection that can be inferred, chosen explicitly, or persisted
@@ -219,7 +219,15 @@ You can also use local path dependencies:
 
 ```toml
 [dependencies]
-local_playbook = { path = "vendor/playbook", tag = "v0.1.0" }
+local_playbook = { path = "vendor/playbook" }
+```
+
+When a dependency is synced from a branch rather than a Git tag, you can optionally retain the
+package's own semantic version separately from the transport ref:
+
+```toml
+[dependencies]
+axiom = { github = "CharlesWiltgen/Axiom", branch = "main", version = "2.34.0" }
 ```
 
 Optional capabilities are still supported:
@@ -244,6 +252,8 @@ justification = "Run repository checks."
 - `dependencies.<alias>.url`
 - `dependencies.<alias>.path`
 - `dependencies.<alias>.tag`
+- `dependencies.<alias>.branch`
+- `dependencies.<alias>.version`
 - `dependencies.<alias>.components`
 
 Unknown manifest fields are ignored with warnings.

@@ -65,6 +65,8 @@ pub struct DependencySpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<Version>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<Vec<DependencyComponent>>,
 }
 
@@ -321,6 +323,9 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
             }
             if let Some(branch) = &dependency.branch {
                 fields.push(format!("branch = {}", quote(branch)));
+            }
+            if let Some(version) = &dependency.version {
+                fields.push(format!("version = {}", quote(&version.to_string())));
             }
             if let Some(components) = dependency.explicit_components_sorted() {
                 let encoded = components
@@ -707,11 +712,11 @@ fn load_claude_marketplace_wrapper(loaded: &LoadedManifest) -> Result<Option<Loa
                 github: None,
                 url: None,
                 path: Some(source_path),
-                tag: declared_version
-                    .clone()
-                    .or_else(|| plugin_manifest.effective_version())
-                    .map(|version| version.to_string()),
+                tag: None,
                 branch: None,
+                version: declared_version
+                    .clone()
+                    .or_else(|| plugin_manifest.effective_version()),
                 components: None,
             },
         );
@@ -1209,7 +1214,15 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
             dependency.path.as_deref(),
             Some(Path::new("./.claude-plugin/plugins/axiom"))
         );
-        assert_eq!(dependency.tag.as_deref(), Some("2.34.0"));
+        assert_eq!(dependency.tag, None);
+        assert_eq!(
+            dependency
+                .version
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("2.34.0")
+        );
         assert_eq!(
             loaded.manifest.version,
             Some(Version::parse("2.34.0").unwrap())
@@ -1637,6 +1650,7 @@ playbook_ios = { github = "wenext-limited", tag = "v0.1.0" }
                 path: None,
                 tag: Some("v0.1.0".into()),
                 branch: None,
+                version: Some(Version::parse("0.1.0").unwrap()),
                 components: Some(vec![
                     DependencyComponent::Rules,
                     DependencyComponent::Skills,
@@ -1649,6 +1663,7 @@ playbook_ios = { github = "wenext-limited", tag = "v0.1.0" }
         assert!(encoded.contains("[dependencies]"));
         assert!(encoded.contains("playbook_ios = {"));
         assert!(encoded.contains("github = \"wenext-limited/playbook-ios\""));
+        assert!(encoded.contains("version = \"0.1.0\""));
         assert!(encoded.contains("components = [\"skills\", \"rules\"]"));
         assert!(!encoded.contains("url = "));
     }
@@ -1724,6 +1739,7 @@ enabled = ["unknown"]
             path: None,
             tag: Some("v0.1.0".into()),
             branch: None,
+            version: None,
             components: None,
         };
 

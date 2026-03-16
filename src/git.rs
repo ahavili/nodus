@@ -88,7 +88,7 @@ pub fn add_dependency_in_dir_with_adapters(
     let alias = normalize_alias_from_url(&normalized_url)?;
     let checkout = ensure_git_dependency(cache_root, &normalized_url, tag, None, true, reporter)?;
     let github = github_slug_from_url(&checkout.url);
-    load_dependency_from_dir(&checkout.path)
+    let dependency_manifest = load_dependency_from_dir(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
 
     let mut root = load_from_dir(project_root, PackageRole::Root)?;
@@ -114,6 +114,10 @@ pub fn add_dependency_in_dir_with_adapters(
             path: None,
             tag: checkout.tag.clone(),
             branch: checkout.branch.clone(),
+            version: checkout
+                .branch
+                .as_ref()
+                .and(dependency_manifest.effective_version()),
             components: (!components.is_empty()).then(|| {
                 let mut sorted = components.to_vec();
                 sorted.sort();
@@ -685,6 +689,7 @@ mod tests {
                 path: None,
                 tag: Some("v0.1.0".into()),
                 branch: None,
+                version: None,
                 components: None,
             },
         );
@@ -706,6 +711,7 @@ mod tests {
                 path: None,
                 tag: Some("v0.1.0".into()),
                 branch: None,
+                version: None,
                 components: None,
             },
         );
