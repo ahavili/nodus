@@ -84,7 +84,7 @@ pub fn detect_repo_adapters(project_root: &Path) -> Adapters {
 }
 
 pub fn should_prompt_for_adapter() -> bool {
-    io::stdin().is_terminal() && io::stderr().is_terminal()
+    !cfg!(test) && io::stdin().is_terminal() && io::stderr().is_terminal()
 }
 
 fn normalize_adapters(adapters: &[Adapter]) -> Vec<Adapter> {
