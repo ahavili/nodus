@@ -135,7 +135,7 @@ fn run_command_in_dir(
                 summary
                     .created_paths
                     .iter()
-                    .map(|path| path.display().to_string())
+                    .map(|path| display_path(path))
                     .collect::<Vec<_>>()
                     .join(", "),
             ))?;
@@ -179,6 +179,14 @@ fn format_adapters(adapters: &[Adapter]) -> String {
         .map(|adapter| adapter.as_str())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn display_path(path: &std::path::Path) -> String {
+    if path.as_os_str().is_empty() {
+        ".".into()
+    } else {
+        path.to_string_lossy().replace('\\', "/")
+    }
 }
 
 #[cfg(test)]

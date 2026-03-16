@@ -948,6 +948,14 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
+    fn canonicalize_git_path_output(path: String) -> PathBuf {
+        PathBuf::from(path).canonicalize().unwrap()
+    }
+
+    fn toml_path_value(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
+    }
+
     #[test]
     fn resolves_local_path_dependencies_with_discovery() {
         let temp = TempDir::new().unwrap();
@@ -1001,11 +1009,11 @@ shared = { path = "vendor/shared" }
             "true"
         );
         assert_eq!(
-            git_output(
+            canonicalize_git_path_output(git_output(
                 &checkout_path,
                 &["rev-parse", "--path-format=absolute", "--git-common-dir"]
-            ),
-            mirror_path.canonicalize().unwrap().to_string_lossy()
+            )),
+            mirror_path.canonicalize().unwrap()
         );
         let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
         assert!(manifest.contains("[dependencies]"));
@@ -1102,7 +1110,7 @@ shared = { path = "vendor/shared" }
 [dependencies]
 leaf = {{ url = "{}", tag = "v0.1.0" }}
 "#,
-                leaf.path().to_string_lossy()
+                toml_path_value(leaf.path())
             ),
         );
         init_git_repo(wrapper.path());
@@ -1875,11 +1883,11 @@ shared = { path = "vendor/shared" }
         assert!(mirror_path.exists());
         assert!(checkout_path.exists());
         assert_eq!(
-            git_output(
+            canonicalize_git_path_output(git_output(
                 &checkout_path,
                 &["rev-parse", "--path-format=absolute", "--git-common-dir"]
-            ),
-            mirror_path.canonicalize().unwrap().to_string_lossy()
+            )),
+            mirror_path.canonicalize().unwrap()
         );
         let resolution_one =
             resolve_project(project_one.path(), cache.path(), ResolveMode::Sync).unwrap();
