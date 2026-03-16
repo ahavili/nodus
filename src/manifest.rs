@@ -368,9 +368,9 @@ fn load_manifest_str(path: &Path, contents: &str) -> Result<(Manifest, Vec<Strin
 fn discover_package_contents(root: &Path) -> Result<PackageContents> {
     Ok(PackageContents {
         skills: discover_skills(root)?,
-        agents: discover_files(root, "agents", true)?,
-        rules: discover_files(root, "rules", false)?,
-        commands: discover_files(root, "commands", false)?,
+        agents: discover_files(root, "agents", true, false)?,
+        rules: discover_files(root, "rules", false, true)?,
+        commands: discover_files(root, "commands", false, true)?,
     })
 }
 
@@ -414,7 +414,12 @@ fn discover_skills(root: &Path) -> Result<Vec<SkillEntry>> {
     Ok(skills)
 }
 
-fn discover_files(root: &Path, directory: &str, markdown_only: bool) -> Result<Vec<FileEntry>> {
+fn discover_files(
+    root: &Path,
+    directory: &str,
+    markdown_only: bool,
+    recursive: bool,
+) -> Result<Vec<FileEntry>> {
     let dir_root = root.join(directory);
     if !dir_root.exists() {
         return Ok(Vec::new());
@@ -425,36 +430,41 @@ fn discover_files(root: &Path, directory: &str, markdown_only: bool) -> Result<V
 
     let mut items = Vec::new();
     let mut ids = HashSet::new();
-    for entry in
-        fs::read_dir(&dir_root).with_context(|| format!("failed to read {}", dir_root.display()))?
-    {
+    let walker = if recursive {
+        walkdir::WalkDir::new(&dir_root).min_depth(1)
+    } else {
+        walkdir::WalkDir::new(&dir_root).min_depth(1).max_depth(1)
+    };
+
+    for entry in walker {
         let entry = entry?;
-        if should_ignore_discovery_entry(&entry.path()) {
+        let path = entry.path();
+        if should_ignore_discovery_entry(path) {
+            if entry.file_type().is_dir() {
+                continue;
+            }
             continue;
         }
-        let file_type = entry.file_type()?;
-        if !file_type.is_file() {
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        if !entry.file_type().is_file() {
             bail!("`{directory}/` entries must be files");
         }
 
-        let path = entry.path();
         if markdown_only && path.extension().and_then(|ext| ext.to_str()) != Some("md") {
             bail!("`{directory}/` entries must use the `.md` extension");
         }
 
-        let id = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| anyhow!("failed to derive id from {}", path.display()))?
-            .to_string();
+        let relative = path
+            .strip_prefix(&dir_root)
+            .with_context(|| format!("failed to make {} relative", path.display()))?;
+        let id = derive_file_entry_id(relative)?;
         if !ids.insert(id.clone()) {
             bail!("duplicate {directory} id `{id}`");
         }
 
-        let relative = PathBuf::from(directory).join(
-            path.file_name()
-                .ok_or_else(|| anyhow!("missing file name for {}", path.display()))?,
-        );
+        let relative = PathBuf::from(directory).join(relative);
         let canonical = canonicalize_existing_path(&root.join(&relative))?;
         if !canonical.starts_with(root) {
             bail!("`{directory}` item `{id}` escapes the package root");
@@ -471,6 +481,23 @@ fn should_ignore_discovery_entry(path: &Path) -> bool {
         return false;
     };
     name.starts_with('.') || name.eq_ignore_ascii_case("README.md")
+}
+
+fn derive_file_entry_id(relative: &Path) -> Result<String> {
+    let stemmed = relative.with_extension("");
+    let parts = stemmed
+        .iter()
+        .map(|value| {
+            value
+                .to_str()
+                .ok_or_else(|| anyhow!("failed to derive id from {}", relative.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let id = parts.join("__");
+    if id.is_empty() {
+        bail!("failed to derive id from {}", relative.display());
+    }
+    Ok(id)
 }
 
 fn validate_skill_directory(skill_dir: &Path) -> Result<()> {
@@ -739,6 +766,27 @@ playbook_ios = { url = "https://github.com/wenext-limited/playbook-ios" }
         assert_eq!(loaded.discovered.agents[0].id, "security");
         assert_eq!(loaded.discovered.rules[0].id, "default");
         assert_eq!(loaded.discovered.commands[0].id, "build");
+    }
+
+    #[test]
+    fn discovers_nested_rules_with_stable_ids() {
+        let temp = TempDir::new().unwrap();
+        write_valid_skill(temp.path());
+        write_file(
+            &temp.path().join("rules/common/coding-style.md"),
+            "# Common\n",
+        );
+        write_file(&temp.path().join("rules/swift/patterns.md"), "# Swift\n");
+
+        let loaded = load_root_from_dir(temp.path()).unwrap();
+
+        let ids = loaded
+            .discovered
+            .rules
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["common__coding-style", "swift__patterns"]);
     }
 
     #[test]
