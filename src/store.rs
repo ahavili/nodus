@@ -70,7 +70,7 @@ fn snapshot_package(
 ) -> Result<PathBuf> {
     let digest_dir_name = digest_directory_name(&package.digest)?;
     let digest_dir = store_root.join(digest_dir_name);
-    let files = package.manifest.package_files()?;
+    let files = package.package_files()?;
     if digest_dir.exists() {
         if snapshot_is_complete(&digest_dir, &package.manifest.root, &files)? {
             return Ok(digest_dir);

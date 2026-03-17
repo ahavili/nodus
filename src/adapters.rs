@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -567,6 +568,12 @@ pub fn build_output_plan(
                     .insert(format!(".opencode/commands/{}.md", command.id));
             }
         }
+
+        merge_files(
+            &mut plan.files,
+            direct_managed_files(project_root, package, snapshot_root)?,
+        )?;
+        register_direct_managed_paths(project_root, &mut plan.managed_files, package)?;
     }
 
     if packages
@@ -621,6 +628,55 @@ fn gitignore_files(
             contents: render_gitignore(&patterns).into_bytes(),
         })
         .collect())
+}
+
+fn direct_managed_files(
+    project_root: &Path,
+    package: &ResolvedPackage,
+    snapshot_root: &Path,
+) -> Result<Vec<ManagedFile>> {
+    let mut files = Vec::new();
+
+    for mapping in package.direct_managed_paths() {
+        for file in &mapping.files {
+            let contents =
+                fs::read(snapshot_root.join(&file.source_relative)).with_context(|| {
+                    format!(
+                        "failed to read direct-managed source {} for `{}`",
+                        file.source_relative.display(),
+                        package.alias
+                    )
+                })?;
+            files.push(ManagedFile {
+                path: project_root.join(&file.target_relative),
+                contents,
+            });
+        }
+    }
+
+    Ok(files)
+}
+
+fn register_direct_managed_paths(
+    project_root: &Path,
+    managed_files: &mut BTreeSet<String>,
+    package: &ResolvedPackage,
+) -> Result<()> {
+    for mapping in package.direct_managed_paths() {
+        validate_direct_managed_root(project_root, managed_files, &mapping.ownership_root)?;
+        managed_files.insert(display_relative(
+            project_root,
+            &project_root.join(&mapping.ownership_root),
+        ));
+        for file in &mapping.files {
+            managed_files.insert(display_relative(
+                project_root,
+                &project_root.join(&file.target_relative),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn gitignore_entry(project_root: &Path, path: &Path) -> Result<Option<(PathBuf, String)>> {
@@ -733,6 +789,24 @@ fn display_relative(project_root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+fn validate_direct_managed_root(
+    project_root: &Path,
+    managed_files: &BTreeSet<String>,
+    candidate: &Path,
+) -> Result<()> {
+    for existing in managed_files.iter().map(PathBuf::from) {
+        if existing.starts_with(candidate) || candidate.starts_with(&existing) {
+            bail!(
+                "managed output roots overlap at {} and {}",
+                display_relative(project_root, &project_root.join(&existing)),
+                display_relative(project_root, &project_root.join(candidate))
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn warn_if_unsupported(

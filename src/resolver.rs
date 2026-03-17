@@ -36,6 +36,22 @@ pub struct ResolvedPackage {
     pub source: PackageSource,
     pub digest: String,
     pub selected_components: Option<Vec<DependencyComponent>>,
+    pub direct_managed_paths: Vec<ResolvedManagedPath>,
+    extra_package_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedManagedPath {
+    pub source_root: PathBuf,
+    pub target_root: PathBuf,
+    pub ownership_root: PathBuf,
+    pub files: Vec<ResolvedManagedFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ResolvedManagedFile {
+    pub source_relative: PathBuf,
+    pub target_relative: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -317,8 +333,9 @@ fn sync_in_dir_with_adapters_mode(
         }
     }
 
-    validate_collisions(planned_files, &owned_paths)?;
+    validate_collisions(planned_files, &owned_paths, cwd)?;
     prune_stale_files(&owned_paths, &desired_paths, cwd)?;
+    prepare_managed_paths_for_write(planned_files, &owned_paths, cwd)?;
     reporter.status("Writing", "managed runtime outputs")?;
     write_managed_files(planned_files)?;
 
@@ -386,7 +403,7 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path, reporter: &Reporter) -> Resu
     }
     let owned_paths = load_owned_paths(cwd, Some(&existing_lockfile))?;
 
-    validate_collisions(planned_files, &owned_paths)?;
+    validate_collisions(planned_files, &owned_paths, cwd)?;
     validate_state_consistency(&owned_paths, &desired_paths, planned_files)?;
 
     resolution
@@ -489,6 +506,8 @@ fn resolve_project(
         PackageSource::Root,
         PackageRole::Root,
         None,
+        Vec::new(),
+        Vec::new(),
         &mut state,
     )?;
 
@@ -518,11 +537,23 @@ fn resolve_package(
     source: PackageSource,
     role: PackageRole,
     selected_components: Option<Vec<DependencyComponent>>,
+    direct_managed_paths: Vec<ResolvedManagedPath>,
+    extra_package_files: Vec<PathBuf>,
     state: &mut ResolverState,
 ) -> Result<ResolvedPackage> {
     if let Some(existing) = state.resolved_by_path.get_mut(&package_root) {
         existing.selected_components =
             union_selected_components(existing.selected_components.clone(), selected_components);
+        if !direct_managed_paths.is_empty() {
+            existing.direct_managed_paths = merge_direct_managed_paths(
+                &package_root,
+                &existing.direct_managed_paths,
+                &direct_managed_paths,
+            )?;
+            merge_extra_package_files(&mut existing.extra_package_files, &extra_package_files);
+            existing.digest =
+                compute_package_digest(&existing.manifest, &existing.extra_package_files)?;
+        }
         return Ok(existing.clone());
     }
 
@@ -549,11 +580,18 @@ fn resolve_package(
         .dependencies
         .iter()
         .map(|(dependency_alias, dependency)| {
-            resolve_dependency(&manifest, dependency_alias, dependency, context, state)
+            resolve_dependency(
+                &manifest,
+                role,
+                dependency_alias,
+                dependency,
+                context,
+                state,
+            )
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let digest = compute_package_digest(&manifest)?;
+    let digest = compute_package_digest(&manifest, &extra_package_files)?;
     let resolved = ResolvedPackage {
         alias,
         root: package_root.clone(),
@@ -561,6 +599,8 @@ fn resolve_package(
         source,
         digest,
         selected_components,
+        direct_managed_paths,
+        extra_package_files,
     };
     state
         .resolved_by_path
@@ -574,6 +614,7 @@ fn resolve_package(
 
 fn resolve_dependency(
     parent: &LoadedManifest,
+    parent_role: PackageRole,
     alias: &str,
     dependency: &DependencySpec,
     context: &ResolveContext<'_>,
@@ -592,6 +633,8 @@ fn resolve_dependency(
                 path: declared_path.clone(),
                 tag: dependency.tag.clone(),
             };
+            let (direct_managed_paths, extra_package_files) =
+                resolve_direct_managed_paths(parent_role, alias, dependency, &dependency_root)?;
             resolve_package(
                 context,
                 alias.to_string(),
@@ -599,6 +642,8 @@ fn resolve_dependency(
                 source,
                 PackageRole::Dependency,
                 dependency.effective_selected_components(),
+                direct_managed_paths,
+                extra_package_files,
                 state,
             )
         }
@@ -641,6 +686,8 @@ fn resolve_dependency(
                 branch: checkout.branch,
                 rev: checkout.rev,
             };
+            let (direct_managed_paths, extra_package_files) =
+                resolve_direct_managed_paths(parent_role, alias, dependency, &checkout.path)?;
             resolve_package(
                 context,
                 alias.to_string(),
@@ -648,6 +695,8 @@ fn resolve_dependency(
                 source,
                 PackageRole::Dependency,
                 dependency.effective_selected_components(),
+                direct_managed_paths,
+                extra_package_files,
                 state,
             )
         }
@@ -722,9 +771,195 @@ fn union_selected_components(
     }
 }
 
-fn compute_package_digest(manifest: &LoadedManifest) -> Result<String> {
+fn resolve_direct_managed_paths(
+    parent_role: PackageRole,
+    alias: &str,
+    dependency: &DependencySpec,
+    dependency_root: &Path,
+) -> Result<(Vec<ResolvedManagedPath>, Vec<PathBuf>)> {
+    if dependency.managed_mappings().is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    if parent_role != PackageRole::Root {
+        bail!(
+            "dependency `{alias}` field `managed` is supported only for direct dependencies in the root manifest"
+        );
+    }
+
+    let mut ownership_roots = Vec::<PathBuf>::new();
+    let mut concrete_targets = HashSet::<PathBuf>::new();
+    let mut mappings = Vec::new();
+    let mut extra_package_files = Vec::new();
+
+    for spec in dependency.managed_mappings() {
+        let source_root = spec.normalized_source()?;
+        let target_root = spec.normalized_target()?;
+        validate_managed_ownership_root(alias, &ownership_roots, &target_root)?;
+
+        let source_path =
+            resolve_dependency_managed_source_path(alias, dependency_root, &source_root)?;
+        let metadata = fs::metadata(&source_path)
+            .with_context(|| format!("failed to read managed source {}", source_path.display()))?;
+        let files = if metadata.is_file() {
+            if !concrete_targets.insert(target_root.clone()) {
+                bail!(
+                    "dependency `{alias}` field `managed` maps multiple sources into {}",
+                    target_root.display()
+                );
+            }
+            extra_package_files.push(source_path);
+            vec![ResolvedManagedFile {
+                source_relative: source_root.clone(),
+                target_relative: target_root.clone(),
+            }]
+        } else if metadata.is_dir() {
+            let mut files = Vec::new();
+            for entry in walkdir::WalkDir::new(&source_path) {
+                let entry = entry?;
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let relative = entry.path().strip_prefix(&source_path).with_context(|| {
+                    format!("failed to make {} relative", entry.path().display())
+                })?;
+                let source_relative = source_root.join(relative);
+                let target_relative = target_root.join(relative);
+                if !concrete_targets.insert(target_relative.clone()) {
+                    bail!(
+                        "dependency `{alias}` field `managed` maps multiple sources into {}",
+                        target_relative.display()
+                    );
+                }
+                extra_package_files.push(entry.path().canonicalize().with_context(|| {
+                    format!("failed to canonicalize {}", entry.path().display())
+                })?);
+                files.push(ResolvedManagedFile {
+                    source_relative,
+                    target_relative,
+                });
+            }
+            files.sort();
+            files
+        } else {
+            bail!(
+                "dependency `{alias}` managed source {} must be a file or directory",
+                source_root.display()
+            );
+        };
+
+        ownership_roots.push(target_root.clone());
+        mappings.push(ResolvedManagedPath {
+            source_root,
+            target_root: target_root.clone(),
+            ownership_root: target_root,
+            files,
+        });
+    }
+
+    extra_package_files.sort();
+    extra_package_files.dedup();
+    Ok((mappings, extra_package_files))
+}
+
+fn validate_managed_ownership_root(
+    alias: &str,
+    existing_roots: &[PathBuf],
+    candidate: &Path,
+) -> Result<()> {
+    if let Some(existing) = existing_roots.iter().find(|existing| {
+        existing.as_path().starts_with(candidate) || candidate.starts_with(existing)
+    }) {
+        bail!(
+            "dependency `{alias}` field `managed` has overlapping target roots `{}` and `{}`",
+            existing.display(),
+            candidate.display()
+        );
+    }
+    Ok(())
+}
+
+fn resolve_dependency_managed_source_path(
+    alias: &str,
+    dependency_root: &Path,
+    source_root: &Path,
+) -> Result<PathBuf> {
+    let canonical_dependency_root = dependency_root
+        .canonicalize()
+        .with_context(|| format!("failed to access {}", dependency_root.display()))?;
+    let source_path = dependency_root.join(source_root);
+    let canonical = source_path
+        .canonicalize()
+        .with_context(|| format!("missing managed source {}", source_path.display()))?;
+    if !canonical.starts_with(&canonical_dependency_root) {
+        bail!(
+            "dependency `{alias}` managed source {} escapes the dependency root {}",
+            source_root.display(),
+            canonical_dependency_root.display()
+        );
+    }
+    Ok(canonical)
+}
+
+fn merge_direct_managed_paths(
+    package_root: &Path,
+    existing: &[ResolvedManagedPath],
+    incoming: &[ResolvedManagedPath],
+) -> Result<Vec<ResolvedManagedPath>> {
+    let mut merged = existing.to_vec();
+
+    for path in incoming {
+        if merged.contains(path) {
+            continue;
+        }
+
+        if let Some(conflict) = merged.iter().find(|existing| {
+            existing.ownership_root.starts_with(&path.ownership_root)
+                || path.ownership_root.starts_with(&existing.ownership_root)
+        }) {
+            bail!(
+                "direct-managed targets for {} overlap at `{}` and `{}`",
+                package_root.display(),
+                conflict.ownership_root.display(),
+                path.ownership_root.display()
+            );
+        }
+
+        let existing_targets = merged
+            .iter()
+            .flat_map(|mapping| mapping.files.iter().map(|file| &file.target_relative))
+            .collect::<HashSet<_>>();
+        if let Some(conflict) = path
+            .files
+            .iter()
+            .find(|file| existing_targets.contains(&file.target_relative))
+        {
+            bail!(
+                "direct-managed targets for {} overlap at `{}`",
+                package_root.display(),
+                conflict.target_relative.display()
+            );
+        }
+
+        merged.push(path.clone());
+    }
+
+    Ok(merged)
+}
+
+fn merge_extra_package_files(target: &mut Vec<PathBuf>, extra_files: &[PathBuf]) {
+    target.extend(extra_files.iter().cloned());
+    target.sort();
+    target.dedup();
+}
+
+fn compute_package_digest(
+    manifest: &LoadedManifest,
+    extra_package_files: &[PathBuf],
+) -> Result<String> {
     let mut files = manifest.package_files()?;
+    files.extend(extra_package_files.iter().cloned());
     files.sort();
+    files.dedup();
 
     let file_payloads = files
         .par_iter()
@@ -893,6 +1128,18 @@ impl ResolvedPackage {
             .as_ref()
             .is_none_or(|components| components.contains(&component))
     }
+
+    pub fn package_files(&self) -> Result<Vec<PathBuf>> {
+        let mut files = self.manifest.package_files()?;
+        files.extend(self.extra_package_files.iter().cloned());
+        files.sort();
+        files.dedup();
+        Ok(files)
+    }
+
+    pub fn direct_managed_paths(&self) -> &[ResolvedManagedPath] {
+        &self.direct_managed_paths
+    }
 }
 
 fn display_path(path: &Path) -> String {
@@ -939,6 +1186,7 @@ fn enforce_capabilities(
 fn validate_collisions(
     planned_files: &[ManagedFile],
     owned_paths: &HashSet<PathBuf>,
+    project_root: &Path,
 ) -> Result<()> {
     for file in planned_files {
         if file.path.exists() && !path_is_owned(&file.path, owned_paths) {
@@ -946,6 +1194,17 @@ fn validate_collisions(
                 "refusing to overwrite unmanaged file {}",
                 file.path.display()
             );
+        }
+
+        let mut current = file.path.parent();
+        while let Some(parent) = current {
+            if parent == project_root {
+                break;
+            }
+            if parent.exists() && parent.is_file() && !path_is_owned(parent, owned_paths) {
+                bail!("refusing to overwrite unmanaged file {}", parent.display());
+            }
+            current = parent.parent();
         }
     }
 
@@ -990,6 +1249,51 @@ fn write_managed_files(planned_files: &[ManagedFile]) -> Result<()> {
         .collect()
 }
 
+fn prepare_managed_paths_for_write(
+    planned_files: &[ManagedFile],
+    owned_paths: &HashSet<PathBuf>,
+    project_root: &Path,
+) -> Result<()> {
+    let mut removed = HashSet::new();
+
+    for file in planned_files {
+        if file.path.is_dir()
+            && path_is_owned(&file.path, owned_paths)
+            && removed.insert(file.path.clone())
+        {
+            fs::remove_dir_all(&file.path).with_context(|| {
+                format!(
+                    "failed to replace managed directory {} with a file",
+                    file.path.display()
+                )
+            })?;
+            prune_empty_parent_dirs(&file.path, project_root)?;
+        }
+
+        let mut current = file.path.parent();
+        while let Some(parent) = current {
+            if parent == project_root {
+                break;
+            }
+            if parent.is_file()
+                && path_is_owned(parent, owned_paths)
+                && removed.insert(parent.to_path_buf())
+            {
+                fs::remove_file(parent).with_context(|| {
+                    format!(
+                        "failed to replace managed file {} with a directory",
+                        parent.display()
+                    )
+                })?;
+                prune_empty_parent_dirs(parent, project_root)?;
+            }
+            current = parent.parent();
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_state_consistency(
     owned_paths: &HashSet<PathBuf>,
     desired_paths: &HashSet<PathBuf>,
@@ -1030,6 +1334,7 @@ fn load_owned_paths(project_root: &Path, lockfile: Option<&Lockfile>) -> Result<
 
 fn prune_empty_parent_dirs(path: &Path, project_root: &Path) -> Result<()> {
     let stop_roots = [
+        project_root.to_path_buf(),
         project_root.join(".agents"),
         project_root.join(".claude"),
         project_root.join(".codex"),
@@ -1311,6 +1616,10 @@ mod tests {
 
     fn sync_all(project_root: &Path, cache_root: &Path) {
         sync_in_dir_with_adapters(project_root, cache_root, false, false, &Adapter::ALL).unwrap();
+    }
+
+    fn sync_all_result(project_root: &Path, cache_root: &Path) -> Result<SyncSummary> {
+        sync_in_dir_with_adapters(project_root, cache_root, false, false, &Adapter::ALL)
     }
 
     fn add_dependency_all(project_root: &Path, cache_root: &Path, url: &str, tag: Option<&str>) {
@@ -2710,6 +3019,287 @@ shared = { path = "vendor/shared", components = ["agents"] }
         );
         assert!(lockfile.managed_files.is_empty());
         assert!(!temp.path().join(".codex/agents").exists());
+    }
+
+    #[test]
+    fn sync_writes_direct_managed_file_targets() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/prompts/review.md"),
+            "Use the review prompt.\n",
+        );
+
+        sync_all(temp.path(), cache.path());
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".github/prompts/review.md")).unwrap(),
+            "Use the review prompt.\n"
+        );
+
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".github/prompts/review.md".into())
+        );
+    }
+
+    #[test]
+    fn sync_writes_and_prunes_direct_managed_directory_targets() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "templates"
+target = "docs/templates"
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/templates/review.md"),
+            "review template\n",
+        );
+        write_file(
+            &temp.path().join("vendor/shared/templates/nested/tips.md"),
+            "tips\n",
+        );
+        write_file(&temp.path().join("docs/templates/user.md"), "keep me\n");
+
+        sync_all(temp.path(), cache.path());
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join("docs/templates/review.md")).unwrap(),
+            "review template\n"
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("docs/templates/nested/tips.md")).unwrap(),
+            "tips\n"
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("docs/templates/user.md")).unwrap(),
+            "keep me\n"
+        );
+
+        fs::remove_file(temp.path().join("vendor/shared/templates/nested/tips.md")).unwrap();
+        sync_all(temp.path(), cache.path());
+
+        assert!(temp.path().join("docs/templates/review.md").exists());
+        assert!(!temp.path().join("docs/templates/nested/tips.md").exists());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("docs/templates/user.md")).unwrap(),
+            "keep me\n"
+        );
+    }
+
+    #[test]
+    fn sync_prunes_direct_managed_targets_when_mapping_is_removed() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/prompts/review.md"),
+            "Use the review prompt.\n",
+        );
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+        );
+
+        sync_all(temp.path(), cache.path());
+        assert!(temp.path().join(".github/prompts/review.md").exists());
+
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        sync_all(temp.path(), cache.path());
+
+        assert!(!temp.path().join(".github/prompts/review.md").exists());
+    }
+
+    #[test]
+    fn sync_rejects_unmanaged_collision_on_direct_managed_target() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/prompts/review.md"),
+            "Use the review prompt.\n",
+        );
+        write_file(
+            &temp.path().join(".github/prompts/review.md"),
+            "user-owned prompt\n",
+        );
+
+        let error = sync_all_result(temp.path(), cache.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("refusing to overwrite unmanaged file"));
+        assert!(error.contains(".github/prompts/review.md"));
+    }
+
+    #[test]
+    fn sync_rejects_overlapping_direct_managed_targets() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "prompts"
+target = "docs/prompts"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = "docs/prompts/review.md"
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/prompts/review.md"),
+            "Use the review prompt.\n",
+        );
+
+        let error = sync_all_result(temp.path(), cache.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("overlapping target roots"));
+    }
+
+    #[test]
+    fn sync_rejects_nested_dependency_managed_paths() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies]
+wrapper = { path = "vendor/wrapper" }
+"#,
+        );
+        write_file(
+            &temp.path().join("vendor/wrapper/nodus.toml"),
+            r#"
+[dependencies.leaf]
+path = "vendor/leaf"
+
+[[dependencies.leaf.managed]]
+source = "prompts/review.md"
+target = "docs/review.md"
+"#,
+        );
+        write_skill(
+            &temp.path().join("vendor/wrapper/skills/wrapper"),
+            "Wrapper",
+        );
+        write_skill(
+            &temp.path().join("vendor/wrapper/vendor/leaf/skills/leaf"),
+            "Leaf",
+        );
+        write_file(
+            &temp
+                .path()
+                .join("vendor/wrapper/vendor/leaf/prompts/review.md"),
+            "Use the review prompt.\n",
+        );
+
+        let error = sync_all_result(temp.path(), cache.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("supported only for direct dependencies in the root manifest"));
+    }
+
+    #[test]
+    fn sync_frozen_keeps_direct_managed_files_at_locked_git_revision() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        let repo = TempDir::new().unwrap();
+        write_skill(&repo.path().join("skills/review"), "Review");
+        write_file(&repo.path().join("prompts/review.md"), "first revision\n");
+        init_git_repo(repo.path());
+        rename_current_branch(repo.path(), "main");
+
+        write_manifest(
+            temp.path(),
+            &format!(
+                r#"
+[adapters]
+enabled = ["codex"]
+
+[dependencies.review_pkg]
+url = "{}"
+branch = "main"
+
+[[dependencies.review_pkg.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+                toml_path_value(repo.path())
+            ),
+        );
+
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".github/prompts/review.md")).unwrap(),
+            "first revision\n"
+        );
+
+        write_file(&repo.path().join("prompts/review.md"), "second revision\n");
+        commit_all(repo.path(), "advance");
+
+        sync_in_dir_frozen(temp.path(), cache.path(), false).unwrap();
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".github/prompts/review.md")).unwrap(),
+            "first revision\n"
+        );
+
+        sync_in_dir(temp.path(), cache.path(), false, false).unwrap();
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".github/prompts/review.md")).unwrap(),
+            "second revision\n"
+        );
     }
 
     #[test]
