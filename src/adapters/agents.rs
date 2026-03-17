@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::adapters::{ManagedFile, namespaced_file_name, namespaced_skill_id};
+use crate::adapters::{ArtifactKind, ManagedFile, managed_artifact_path, managed_skill_root};
 use crate::manifest::{FileEntry, SkillEntry};
 use crate::resolver::ResolvedPackage;
 
@@ -14,9 +14,7 @@ pub fn skill_files(
     skill: &SkillEntry,
 ) -> Result<Vec<ManagedFile>> {
     copy_directory(
-        project_root
-            .join(".agents/skills")
-            .join(namespaced_skill_id(package, &skill.id)),
+        managed_skill_root(project_root, crate::adapters::Adapter::Agents, package, &skill.id),
         snapshot_root.join(&skill.path),
     )
 }
@@ -28,9 +26,14 @@ pub fn command_file(
     command: &FileEntry,
 ) -> Result<ManagedFile> {
     copy_file(
-        project_root
-            .join(".agents/commands")
-            .join(namespaced_file_name(package, &command.id, "md")),
+        managed_artifact_path(
+            project_root,
+            crate::adapters::Adapter::Agents,
+            ArtifactKind::Command,
+            package,
+            &command.id,
+        )
+        .expect("agents command path"),
         snapshot_root.join(&command.path),
     )
 }

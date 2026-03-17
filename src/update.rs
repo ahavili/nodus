@@ -47,6 +47,7 @@ pub fn update_direct_dependencies_in_dir(
     allow_high_sensitivity: bool,
     reporter: &Reporter,
 ) -> Result<UpdateSummary> {
+    crate::relay::ensure_no_pending_relay_edits_in_dir(cwd, cache_root)?;
     let mut root = load_root_from_dir(cwd)?;
     let dependency_count = root.manifest.dependencies.len();
     if dependency_count == 0 {

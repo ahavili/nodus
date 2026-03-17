@@ -108,6 +108,13 @@ enum Command {
         )]
         allow_high_sensitivity: bool,
     },
+    #[command(about = "Relay linked managed edits back into a maintainer checkout")]
+    Relay {
+        #[arg(help = "Dependency alias or repository reference to relay")]
+        package: String,
+        #[arg(long, help = "Local checkout path to persist and relay into")]
+        repo_path: Option<PathBuf>,
+    },
     #[command(about = "Create a minimal nodus.toml and example skill")]
     Init,
     #[command(about = "Resolve dependencies and write managed runtime outputs")]
@@ -284,6 +291,22 @@ fn run_command_in_dir(
                     .map(|path| display_path(path))
                     .collect::<Vec<_>>()
                     .join(", "),
+            ))?;
+            Ok(())
+        }
+        Command::Relay { package, repo_path } => {
+            let summary = crate::relay::relay_dependency_in_dir(
+                cwd,
+                cache_root,
+                &package,
+                repo_path.as_deref(),
+                reporter,
+            )?;
+            reporter.finish(format!(
+                "relayed {} into {}; updated {} source files",
+                summary.alias,
+                display_path(&summary.linked_repo),
+                summary.updated_file_count,
             ))?;
             Ok(())
         }
@@ -523,6 +546,26 @@ mod tests {
         match cli.command {
             Command::Outdated => {}
             other => panic!("expected outdated command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_relay_subcommand() {
+        let cli = Cli::try_parse_from([
+            "nodus",
+            "relay",
+            "wenext-limited/playbook-ios",
+            "--repo-path",
+            "/tmp/playbook-ios",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Relay { package, repo_path } => {
+                assert_eq!(package, "wenext-limited/playbook-ios");
+                assert_eq!(repo_path.as_deref(), Some(Path::new("/tmp/playbook-ios")));
+            }
+            other => panic!("expected relay command, got {other:?}"),
         }
     }
 

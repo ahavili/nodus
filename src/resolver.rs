@@ -209,6 +209,7 @@ fn sync_in_dir_with_adapters_mode(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    crate::relay::ensure_no_pending_relay_edits_in_dir(cwd, cache_root)?;
     let mut root = load_root_from_dir(cwd)?;
     let selection = resolve_adapter_selection(
         cwd,
@@ -407,6 +408,27 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path, reporter: &Reporter) -> Resu
     Ok(DoctorSummary {
         package_count: resolution.packages.len(),
     })
+}
+
+pub fn resolve_project_from_current_lockfile_in_dir(
+    cwd: &Path,
+    cache_root: &Path,
+    selected_adapters: Adapters,
+    reporter: &Reporter,
+) -> Result<(Resolution, Lockfile)> {
+    let lockfile_path = cwd.join(LOCKFILE_NAME);
+    if !lockfile_path.exists() {
+        bail!("missing {}", LOCKFILE_NAME);
+    }
+
+    let lockfile = Lockfile::read(&lockfile_path)?;
+    let resolution = resolve_project(cwd, cache_root, ResolveMode::Doctor, reporter, Some(&lockfile))?;
+    let expected = resolution.to_lockfile(selected_adapters)?;
+    if lockfile != expected {
+        bail!("{LOCKFILE_NAME} is out of date");
+    }
+
+    Ok((resolution, lockfile))
 }
 
 fn validate_git_package(package: &ResolvedPackage, cache_root: &Path) -> Result<()> {

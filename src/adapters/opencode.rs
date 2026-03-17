@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::adapters::{ManagedFile, namespaced_file_name, namespaced_skill_id};
+use crate::adapters::{ArtifactKind, ManagedFile, managed_artifact_path, managed_skill_root, namespaced_skill_id};
 use crate::manifest::{FileEntry, SkillEntry};
 use crate::resolver::ResolvedPackage;
 
@@ -15,9 +15,12 @@ pub fn skill_files(
 ) -> Result<Vec<ManagedFile>> {
     let source_root = snapshot_root.join(&skill.path);
     let managed_skill_id = namespaced_skill_id(package, &skill.id);
-    let target_root = project_root
-        .join(".opencode/skills")
-        .join(&managed_skill_id);
+    let target_root = managed_skill_root(
+        project_root,
+        crate::adapters::Adapter::OpenCode,
+        package,
+        &skill.id,
+    );
     let mut files = Vec::new();
 
     for entry in walkdir::WalkDir::new(&source_root) {
@@ -53,9 +56,14 @@ pub fn agent_file(
     agent: &FileEntry,
 ) -> Result<ManagedFile> {
     copy_file(
-        project_root
-            .join(".opencode/agents")
-            .join(namespaced_file_name(package, &agent.id, "md")),
+        managed_artifact_path(
+            project_root,
+            crate::adapters::Adapter::OpenCode,
+            ArtifactKind::Agent,
+            package,
+            &agent.id,
+        )
+        .expect("opencode agent path"),
         snapshot_root.join(&agent.path),
     )
 }
@@ -67,9 +75,14 @@ pub fn command_file(
     command: &FileEntry,
 ) -> Result<ManagedFile> {
     copy_file(
-        project_root
-            .join(".opencode/commands")
-            .join(namespaced_file_name(package, &command.id, "md")),
+        managed_artifact_path(
+            project_root,
+            crate::adapters::Adapter::OpenCode,
+            ArtifactKind::Command,
+            package,
+            &command.id,
+        )
+        .expect("opencode command path"),
         snapshot_root.join(&command.path),
     )
 }
@@ -81,9 +94,14 @@ pub fn rule_file(
     rule: &FileEntry,
 ) -> Result<ManagedFile> {
     copy_file(
-        project_root
-            .join(".opencode/rules")
-            .join(namespaced_file_name(package, &rule.id, "md")),
+        managed_artifact_path(
+            project_root,
+            crate::adapters::Adapter::OpenCode,
+            ArtifactKind::Rule,
+            package,
+            &rule.id,
+        )
+        .expect("opencode rule path"),
         snapshot_root.join(&rule.path),
     )
 }
@@ -124,7 +142,7 @@ fn copy_file(target_path: impl AsRef<Path>, source_path: impl AsRef<Path>) -> Re
     })
 }
 
-fn rewrite_skill_name(contents: &[u8], skill_id: &str) -> Result<Vec<u8>> {
+pub(crate) fn rewrite_skill_name(contents: &[u8], skill_id: &str) -> Result<Vec<u8>> {
     let contents = String::from_utf8(contents.to_vec()).context("OpenCode skills must be UTF-8")?;
     let original_has_trailing_newline = contents.ends_with('\n');
     let mut lines = contents.lines().map(str::to_string).collect::<Vec<_>>();

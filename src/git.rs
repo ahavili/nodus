@@ -170,6 +170,7 @@ pub fn remove_dependency_in_dir(
     package: &str,
     reporter: &Reporter,
 ) -> Result<RemoveSummary> {
+    crate::relay::ensure_no_pending_relay_edits_in_dir(project_root, cache_root)?;
     let mut root = load_from_dir(project_root, PackageRole::Root)?;
     let alias = resolve_dependency_alias(&root.manifest.dependencies, package)?;
     reporter.status(
@@ -395,7 +396,7 @@ pub fn normalize_alias_from_url(url: &str) -> Result<String> {
         .with_context(|| format!("failed to infer a dependency alias from `{url}`"))
 }
 
-fn resolve_dependency_alias(
+pub fn resolve_dependency_alias(
     dependencies: &std::collections::BTreeMap<String, DependencySpec>,
     package: &str,
 ) -> Result<String> {
@@ -409,6 +410,27 @@ fn resolve_dependency_alias(
     }
 
     bail!("dependency `{package}` does not exist")
+}
+
+pub fn repository_origin_url(path: &Path) -> Result<String> {
+    git_output(path, ["remote", "get-url", "origin"]).map(|value| value.trim().to_string())
+}
+
+pub fn is_git_repository(path: &Path) -> bool {
+    git_output(path, ["rev-parse", "--git-dir"]).is_ok()
+}
+
+pub fn git_urls_match(left: &str, right: &str) -> bool {
+    let left = normalize_git_url(left);
+    let right = normalize_git_url(right);
+    if left == right {
+        return true;
+    }
+
+    match (github_slug_from_url(&left), github_slug_from_url(&right)) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
 }
 
 fn normalize_repository_name_from_url(url: &str) -> Result<String> {

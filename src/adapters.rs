@@ -185,6 +185,90 @@ pub fn namespaced_skill_id(package: &ResolvedPackage, skill_id: &str) -> String 
     namespaced_artifact_id(package, skill_id)
 }
 
+pub fn runtime_root(project_root: &Path, adapter: Adapter) -> PathBuf {
+    project_root.join(match adapter {
+        Adapter::Agents => ".agents",
+        Adapter::Claude => ".claude",
+        Adapter::Codex => ".codex",
+        Adapter::Cursor => ".cursor",
+        Adapter::OpenCode => ".opencode",
+    })
+}
+
+pub fn managed_skill_root(
+    project_root: &Path,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+    skill_id: &str,
+) -> PathBuf {
+    runtime_root(project_root, adapter)
+        .join("skills")
+        .join(namespaced_skill_id(package, skill_id))
+}
+
+pub fn managed_artifact_path(
+    project_root: &Path,
+    adapter: Adapter,
+    kind: ArtifactKind,
+    package: &ResolvedPackage,
+    artifact_id: &str,
+) -> Option<PathBuf> {
+    let runtime_root = runtime_root(project_root, adapter);
+    match (adapter, kind) {
+        (Adapter::Agents, ArtifactKind::Command) => Some(
+            runtime_root
+                .join("commands")
+                .join(namespaced_file_name(package, artifact_id, "md")),
+        ),
+        (Adapter::Claude, ArtifactKind::Agent) => Some(
+            runtime_root
+                .join("agents")
+                .join(namespaced_file_name(package, artifact_id, "md")),
+        ),
+        (Adapter::Claude, ArtifactKind::Command) => Some(
+            runtime_root
+                .join("commands")
+                .join(namespaced_file_name(package, artifact_id, "md")),
+        ),
+        (Adapter::Claude, ArtifactKind::Rule) => Some(
+            runtime_root
+                .join("rules")
+                .join(namespaced_file_name(package, artifact_id, "md")),
+        ),
+        (Adapter::Codex, ArtifactKind::Rule) => Some(
+            runtime_root
+                .join("rules")
+                .join(namespaced_file_name(package, artifact_id, "rules")),
+        ),
+        (Adapter::Cursor, ArtifactKind::Command) => Some(
+            runtime_root
+                .join("commands")
+                .join(namespaced_file_name(package, artifact_id, "md")),
+        ),
+        (Adapter::Cursor, ArtifactKind::Rule) => Some(
+            runtime_root
+                .join("rules")
+                .join(namespaced_file_name(package, artifact_id, "mdc")),
+        ),
+        (Adapter::OpenCode, ArtifactKind::Agent) => Some(
+            runtime_root
+                .join("agents")
+                .join(namespaced_file_name(package, artifact_id, "md")),
+        ),
+        (Adapter::OpenCode, ArtifactKind::Command) => Some(
+            runtime_root
+                .join("commands")
+                .join(namespaced_file_name(package, artifact_id, "md")),
+        ),
+        (Adapter::OpenCode, ArtifactKind::Rule) => Some(
+            runtime_root
+                .join("rules")
+                .join(namespaced_file_name(package, artifact_id, "md")),
+        ),
+        _ => None,
+    }
+}
+
 pub fn namespaced_artifact_id(package: &ResolvedPackage, artifact_id: &str) -> String {
     format!("{artifact_id}_{}", package_short_id(package))
 }
