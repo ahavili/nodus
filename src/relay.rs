@@ -12,7 +12,9 @@ use crate::git::{
 use crate::local_config::{LocalConfig, RelayLink};
 use crate::manifest::{DependencySourceKind, SkillEntry, load_root_from_dir};
 use crate::report::Reporter;
-use crate::resolver::{PackageSource, ResolvedPackage, resolve_project_from_current_lockfile_in_dir};
+use crate::resolver::{
+    PackageSource, ResolvedPackage, resolve_project_from_current_lockfile_in_dir,
+};
 use crate::selection::resolve_adapter_selection;
 use crate::store::snapshot_resolution;
 
@@ -78,7 +80,12 @@ pub fn relay_dependency_in_dir(
         repo_path_override,
     )?;
 
-    let plan = build_relay_plan(&dependency, &workspace.project_root, workspace.selected_adapters, &linked_repo)?;
+    let plan = build_relay_plan(
+        &dependency,
+        &workspace.project_root,
+        workspace.selected_adapters,
+        &linked_repo,
+    )?;
     if !plan.conflicts.is_empty() {
         bail!(
             "relay conflicts for `{}`:\n{}",
@@ -87,7 +94,10 @@ pub fn relay_dependency_in_dir(
         );
     }
 
-    reporter.status("Relaying", format!("managed edits for {}", dependency.alias))?;
+    reporter.status(
+        "Relaying",
+        format!("managed edits for {}", dependency.alias),
+    )?;
     for (path, contents) in &plan.updates {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -143,10 +153,7 @@ pub fn ensure_no_pending_relay_edits_in_dir(project_root: &Path, cache_root: &Pa
             &linked,
         )?;
         if !plan.conflicts.is_empty() {
-            blocked.push(format!(
-                "{alias}: {}",
-                plan.conflicts.join("; ")
-            ));
+            blocked.push(format!("{alias}: {}", plan.conflicts.join("; ")));
             continue;
         }
         if !plan.updates.is_empty() {
@@ -167,7 +174,11 @@ pub fn ensure_no_pending_relay_edits_in_dir(project_root: &Path, cache_root: &Pa
     }
 }
 
-fn load_workspace(project_root: &Path, cache_root: &Path, reporter: &Reporter) -> Result<RelayWorkspace> {
+fn load_workspace(
+    project_root: &Path,
+    cache_root: &Path,
+    reporter: &Reporter,
+) -> Result<RelayWorkspace> {
     let root = load_root_from_dir(project_root)?;
     let selection = resolve_adapter_selection(project_root, &root.manifest, &[], false)?;
     let selected_adapters = Adapters::from_slice(&selection.adapters);
@@ -302,7 +313,10 @@ fn resolve_linked_repo(
     }
 }
 
-fn resolve_existing_link(local_config: &LocalConfig, dependency: &DependencyContext) -> Result<PathBuf> {
+fn resolve_existing_link(
+    local_config: &LocalConfig,
+    dependency: &DependencyContext,
+) -> Result<PathBuf> {
     let link = local_config.relay_link(&dependency.alias).ok_or_else(|| {
         anyhow!(
             "no relay link configured for `{}`; rerun with `--repo-path <path>`",
@@ -318,8 +332,12 @@ fn validate_linked_repo(path: &Path, url: &str) -> Result<()> {
     if !is_git_repository(path) {
         bail!("linked repo {} is not a git repository", path.display());
     }
-    let origin = repository_origin_url(path)
-        .with_context(|| format!("linked repo {} is missing an `origin` remote", path.display()))?;
+    let origin = repository_origin_url(path).with_context(|| {
+        format!(
+            "linked repo {} is missing an `origin` remote",
+            path.display()
+        )
+    })?;
     if !git_urls_match(&origin, url) {
         bail!(
             "linked repo {} has origin `{}` instead of `{}`",
@@ -354,7 +372,10 @@ fn build_relay_plan(
 
         for mapping in group {
             let baseline_source = fs::read(&mapping.snapshot_path).with_context(|| {
-                format!("failed to read relay baseline {}", mapping.snapshot_path.display())
+                format!(
+                    "failed to read relay baseline {}",
+                    mapping.snapshot_path.display()
+                )
             })?;
             let baseline_managed = mapping.transform.to_managed_bytes(&baseline_source)?;
             let current_managed = match fs::read(&mapping.managed_path) {
@@ -368,7 +389,10 @@ fn build_relay_plan(
                 }
                 Err(error) => {
                     return Err(error).with_context(|| {
-                        format!("failed to read managed file {}", mapping.managed_path.display())
+                        format!(
+                            "failed to read managed file {}",
+                            mapping.managed_path.display()
+                        )
                     });
                 }
             };
@@ -463,9 +487,13 @@ fn build_mappings(
             if !selected_adapters.contains(adapter) {
                 continue;
             }
-            if let Some(managed_path) =
-                managed_artifact_path(project_root, adapter, ArtifactKind::Agent, package, &agent.id)
-            {
+            if let Some(managed_path) = managed_artifact_path(
+                project_root,
+                adapter,
+                ArtifactKind::Agent,
+                package,
+                &agent.id,
+            ) {
                 mappings.push(file_mapping(
                     managed_path,
                     snapshot_root.join(&agent.path),
@@ -606,7 +634,8 @@ fn restore_opencode_skill_name(
     baseline_source: &[u8],
     managed_skill_id: &str,
 ) -> Result<Vec<u8>> {
-    let managed = String::from_utf8(managed.to_vec()).context("OpenCode managed skills must be UTF-8")?;
+    let managed =
+        String::from_utf8(managed.to_vec()).context("OpenCode managed skills must be UTF-8")?;
     let baseline_source = String::from_utf8(baseline_source.to_vec())
         .context("OpenCode source skills must be UTF-8")?;
     let restored_name = extract_frontmatter_name(&baseline_source)?;
@@ -614,7 +643,11 @@ fn restore_opencode_skill_name(
     let Some(index) = lines
         .iter()
         .position(|line| line.trim_start() == format!("name: {managed_skill_id}"))
-        .or_else(|| lines.iter().position(|line| line.trim_start().starts_with("name:")))
+        .or_else(|| {
+            lines
+                .iter()
+                .position(|line| line.trim_start().starts_with("name:"))
+        })
     else {
         bail!("OpenCode managed skill is missing a frontmatter `name`");
     };
@@ -658,4 +691,374 @@ fn display_relative(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::io::Write;
+    use std::process::Command;
+
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::adapters::managed_artifact_path;
+    use crate::git::{AddDependencyOptions, add_dependency_in_dir_with_adapters};
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(contents.as_bytes()).unwrap();
+    }
+
+    fn append_file(path: &Path, suffix: &str) {
+        let mut contents = fs::read_to_string(path).unwrap();
+        contents.push_str(suffix);
+        fs::write(path, contents).unwrap();
+    }
+
+    fn run_git(path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo(path: &Path) {
+        run_git(path, &["init"]);
+        run_git(path, &["config", "user.email", "test@example.com"]);
+        run_git(path, &["config", "user.name", "Test User"]);
+        run_git(path, &["add", "."]);
+        run_git(path, &["commit", "-m", "initial"]);
+    }
+
+    fn create_remote_dependency() -> (TempDir, PathBuf) {
+        let temp = TempDir::new().unwrap();
+        let repo_path = temp.path().join("playbook-ios");
+        fs::create_dir_all(&repo_path).unwrap();
+        write_file(
+            &repo_path.join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Example.\n---\n# Review\n",
+        );
+        write_file(&repo_path.join("agents/security.md"), "# Security\n");
+        write_file(&repo_path.join("rules/policy.md"), "Be careful.\n");
+        write_file(&repo_path.join("commands/build.md"), "# Build\n");
+        init_git_repo(&repo_path);
+        run_git(&repo_path, &["tag", "v0.1.0"]);
+        (temp, repo_path)
+    }
+
+    fn clone_linked_repo(remote: &Path) -> TempDir {
+        let linked = TempDir::new().unwrap();
+        let target = linked.path().join("linked");
+        let output = Command::new("git")
+            .args([
+                "clone",
+                remote.to_string_lossy().as_ref(),
+                target.to_string_lossy().as_ref(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        linked
+    }
+
+    fn install_dependency(project: &Path, cache: &Path, remote: &Path, adapters: &[Adapter]) {
+        let reporter = Reporter::silent();
+        add_dependency_in_dir_with_adapters(
+            project,
+            cache,
+            &remote.to_string_lossy(),
+            Some("v0.1.0"),
+            AddDependencyOptions {
+                adapters,
+                components: &[],
+                sync_on_launch: false,
+            },
+            &reporter,
+        )
+        .unwrap();
+    }
+
+    fn resolved_package(project: &Path, cache: &Path, adapters: &[Adapter]) -> ResolvedPackage {
+        let reporter = Reporter::silent();
+        let (resolution, _) = resolve_project_from_current_lockfile_in_dir(
+            project,
+            cache,
+            Adapters::from_slice(adapters),
+            &reporter,
+        )
+        .unwrap();
+        resolution
+            .packages
+            .into_iter()
+            .find(|package| package.alias == "playbook_ios")
+            .unwrap()
+    }
+
+    #[test]
+    fn relay_writes_back_edits_for_all_adapters_and_preserves_opencode_name() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(project.path(), cache.path(), &remote_repo, &Adapter::ALL);
+
+        let package = resolved_package(project.path(), cache.path(), &Adapter::ALL);
+        let skill_suffix = "\nRelay skill update.\n";
+        for adapter in [
+            Adapter::Agents,
+            Adapter::Claude,
+            Adapter::Codex,
+            Adapter::Cursor,
+            Adapter::OpenCode,
+        ] {
+            append_file(
+                &managed_skill_root(project.path(), adapter, &package, "review").join("SKILL.md"),
+                skill_suffix,
+            );
+        }
+        let agent_suffix = "\nRelay agent update.\n";
+        for adapter in [Adapter::Claude, Adapter::OpenCode] {
+            append_file(
+                &managed_artifact_path(
+                    project.path(),
+                    adapter,
+                    ArtifactKind::Agent,
+                    &package,
+                    "security",
+                )
+                .unwrap(),
+                agent_suffix,
+            );
+        }
+        let rule_suffix = "\nRelay rule update.\n";
+        for adapter in [
+            Adapter::Claude,
+            Adapter::Codex,
+            Adapter::Cursor,
+            Adapter::OpenCode,
+        ] {
+            append_file(
+                &managed_artifact_path(
+                    project.path(),
+                    adapter,
+                    ArtifactKind::Rule,
+                    &package,
+                    "policy",
+                )
+                .unwrap(),
+                rule_suffix,
+            );
+        }
+        let command_suffix = "\nRelay command update.\n";
+        for adapter in [
+            Adapter::Agents,
+            Adapter::Claude,
+            Adapter::Cursor,
+            Adapter::OpenCode,
+        ] {
+            append_file(
+                &managed_artifact_path(
+                    project.path(),
+                    adapter,
+                    ArtifactKind::Command,
+                    &package,
+                    "build",
+                )
+                .unwrap(),
+                command_suffix,
+            );
+        }
+
+        let summary = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.alias, "playbook_ios");
+        assert_eq!(summary.updated_file_count, 4);
+        let relayed_skill = fs::read_to_string(linked_repo.join("skills/review/SKILL.md")).unwrap();
+        assert!(relayed_skill.contains("name: Review"));
+        assert!(!relayed_skill.contains("name: review_"));
+        assert!(relayed_skill.ends_with(skill_suffix));
+        assert!(
+            fs::read_to_string(linked_repo.join("agents/security.md"))
+                .unwrap()
+                .ends_with(agent_suffix)
+        );
+        assert!(
+            fs::read_to_string(linked_repo.join("rules/policy.md"))
+                .unwrap()
+                .ends_with(rule_suffix)
+        );
+        assert!(
+            fs::read_to_string(linked_repo.join("commands/build.md"))
+                .unwrap()
+                .ends_with(command_suffix)
+        );
+
+        let local_config = LocalConfig::load_in_dir(project.path()).unwrap();
+        let link = local_config.relay_link("playbook_ios").unwrap();
+        assert_eq!(link.repo_path, linked_repo.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn relay_rejects_when_managed_variants_disagree() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Claude, Adapter::Codex],
+        );
+
+        let package = resolved_package(
+            project.path(),
+            cache.path(),
+            &[Adapter::Claude, Adapter::Codex],
+        );
+        append_file(
+            &managed_artifact_path(
+                project.path(),
+                Adapter::Claude,
+                ArtifactKind::Rule,
+                &package,
+                "policy",
+            )
+            .unwrap(),
+            "\nClaude change.\n",
+        );
+        append_file(
+            &managed_artifact_path(
+                project.path(),
+                Adapter::Codex,
+                ArtifactKind::Rule,
+                &package,
+                "policy",
+            )
+            .unwrap(),
+            "\nCodex change.\n",
+        );
+
+        let error = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("disagree on relayed contents"));
+    }
+
+    #[test]
+    fn relay_requires_a_persisted_or_explicit_repo_path() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Codex],
+        );
+
+        let error = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            None,
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("--repo-path <path>"));
+    }
+
+    #[test]
+    fn pending_relay_edits_block_sync_update_and_remove() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Codex],
+        );
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let package = resolved_package(project.path(), cache.path(), &[Adapter::Codex]);
+        append_file(
+            &managed_skill_root(project.path(), Adapter::Codex, &package, "review")
+                .join("SKILL.md"),
+            "\nPending relay change.\n",
+        );
+
+        let sync_error = crate::resolver::sync_in_dir(
+            project.path(),
+            cache.path(),
+            false,
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(sync_error.contains("pending relay edits"));
+
+        let update_error = crate::update::update_direct_dependencies_in_dir(
+            project.path(),
+            cache.path(),
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(update_error.contains("pending relay edits"));
+
+        let remove_error = crate::git::remove_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(remove_error.contains("pending relay edits"));
+    }
 }

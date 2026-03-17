@@ -14,7 +14,12 @@ pub fn skill_files(
     skill: &SkillEntry,
 ) -> Result<Vec<ManagedFile>> {
     copy_directory(
-        managed_skill_root(project_root, crate::adapters::Adapter::Codex, package, &skill.id),
+        managed_skill_root(
+            project_root,
+            crate::adapters::Adapter::Codex,
+            package,
+            &skill.id,
+        ),
         snapshot_root.join(&skill.path),
     )
 }

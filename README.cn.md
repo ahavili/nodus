@@ -33,6 +33,7 @@ Nodus 面向这样一类仓库：希望消费 agent package，但不想手动拼
 nodus add obra/superpowers --adapter codex
 nodus add obra/superpowers --adapter codex --component skills
 nodus info obra/superpowers
+nodus relay superpowers --repo-path ../superpowers
 nodus doctor
 ```
 
@@ -45,7 +46,7 @@ nodus doctor
 - 非受管理文件永远不会被覆盖
 - 高敏感度包必须显式选择允许
 
-包作者仍然可以从 `skills/`、`agents/`、`rules/` 和 `commands/` 发布内容，但作为使用方，你主要会和 `nodus add`、`nodus info`、`nodus sync`、`nodus doctor` 打交道。
+包作者仍然可以从 `skills/`、`agents/`、`rules/` 和 `commands/` 发布内容，但作为使用方，你主要会和 `nodus add`、`nodus info`、`nodus update`、`nodus relay`、`nodus sync`、`nodus doctor` 打交道。
 
 <a id="install"></a>
 ## 安装
@@ -169,6 +170,12 @@ nodus --store-path /tmp/nodus-store sync
 
 ```bash
 nodus remove superpowers
+```
+
+如果你在本地维护某个依赖仓库，并希望把受管理运行时目录中的修改回写到该仓库：
+
+```bash
+nodus relay superpowers --repo-path ../superpowers
 ```
 
 完成设置后，你的仓库会在 `nodus.toml` 中拥有固定依赖，在 `nodus.lock` 中拥有精确解析状态，并在你选择的适配器根目录下拥有受管理的运行时文件。
@@ -404,6 +411,30 @@ nodus info obra/superpowers --branch main
 
 从 `nodus.toml` 中移除一个依赖，然后运行常规同步流程来更新 `nodus.lock` 并清理受管理运行时文件。包参数既可以是依赖别名，也可以是 `owner/repo` 这样的仓库引用。
 
+### `nodus relay`
+
+```bash
+nodus relay <dependency> [--repo-path <path>]
+```
+
+把 `.codex/`、`.claude/`、`.cursor/`、`.agents/`、`.opencode/` 等受管理运行时目录中的修改，回写到你本地维护的直接 Git 依赖检出。
+
+行为：
+
+- 只支持 `nodus.toml` 中的直接 Git 依赖
+- 需要当前有效的 `nodus.lock`，并以锁定快照作为回写基线
+- 将维护者本地关联信息持久化到 `.nodus/local.toml`
+- 自动写入 `.nodus/.gitignore`，保证该本地关联配置默认不纳入版本控制
+- 会校验关联检出是 Git 仓库，且其 `origin` 与依赖 URL 一致
+- 只把变更过的源文件写回本地检出，不会自动 commit 或 push
+- 如果多个受管理变体的内容不一致，或关联源码与受管理输出都偏离了锁定基线，则会失败
+
+示例：
+
+```bash
+nodus relay superpowers --repo-path ../superpowers
+```
+
 ### `nodus sync`
 
 解析根项目及其已配置依赖，递归跟随依赖清单中声明的嵌套依赖，对发现的内容生成快照，写入 `nodus.lock`，并为已解析依赖生成受管理的运行时输出。
@@ -415,6 +446,8 @@ nodus info obra/superpowers --branch main
 - `--frozen`：严格按 `nodus.lock` 安装 Git 修订版本；如果锁文件缺失或已过期则失败
 - `--allow-high-sensitivity`：允许声明了 `high` 敏感度能力的包
 - `--adapter <agents|claude|codex|cursor|opencode>`：覆盖并持久化该仓库的适配器选择
+
+如果某个依赖已经在 `.nodus/local.toml` 中配置了 relay 链接，而对应的受管理输出仍有尚未回写的修改，`sync` 会直接失败，而不是覆盖这些修改。
 
 ### `nodus doctor`
 
@@ -438,6 +471,7 @@ Nodus 只管理它自己写入的文件。
 - 写入或更新受管理文件
 - 删除那些已经不再需要的过期受管理文件
 - 拒绝覆盖已有的非受管理文件
+- 拒绝覆盖已经通过 `.nodus/local.toml` 关联、但尚未 relay 的受管理修改
 
 ## 锁文件与存储
 

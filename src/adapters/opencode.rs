@@ -3,7 +3,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::adapters::{ArtifactKind, ManagedFile, managed_artifact_path, managed_skill_root, namespaced_skill_id};
+use crate::adapters::{
+    ArtifactKind, ManagedFile, managed_artifact_path, managed_skill_root, namespaced_skill_id,
+};
 use crate::manifest::{FileEntry, SkillEntry};
 use crate::resolver::ResolvedPackage;
 

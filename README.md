@@ -35,6 +35,7 @@ nodus add obra/superpowers --adapter codex --component skills
 nodus info obra/superpowers
 nodus outdated
 nodus update
+nodus relay superpowers --repo-path ../superpowers
 nodus doctor
 ```
 
@@ -47,7 +48,7 @@ The install flow is designed to stay predictable:
 - unmanaged files are never overwritten
 - high-sensitivity packages require explicit opt-in
 
-Package authors can still publish content from `skills/`, `agents/`, `rules/`, and `commands/`, but as a consumer you mostly interact with `nodus add`, `nodus info`, `nodus outdated`, `nodus update`, `nodus sync`, and `nodus doctor`.
+Package authors can still publish content from `skills/`, `agents/`, `rules/`, and `commands/`, but as a consumer you mostly interact with `nodus add`, `nodus info`, `nodus outdated`, `nodus update`, `nodus relay`, `nodus sync`, and `nodus doctor`.
 
 ## Install
 
@@ -169,6 +170,12 @@ Remove a configured dependency and prune its managed outputs:
 
 ```bash
 nodus remove superpowers
+```
+
+If you maintain a dependency repo locally and want to relay managed edits back into that checkout:
+
+```bash
+nodus relay superpowers --repo-path ../superpowers
 ```
 
 After setup, your repo has a pinned dependency in `nodus.toml`, exact resolved state in `nodus.lock`, and managed runtime files under the adapter root you selected.
@@ -426,6 +433,30 @@ Behavior:
 - path dependencies are left as local paths and included in the normal sync pass
 - `--allow-high-sensitivity` mirrors `nodus sync` for projects that already opt into high-sensitivity capabilities
 
+### `nodus relay`
+
+```bash
+nodus relay <dependency> [--repo-path <path>]
+```
+
+Relays edits from managed runtime outputs like `.codex/`, `.claude/`, `.cursor/`, `.agents/`, and `.opencode/` back into a maintainer-owned local checkout of the direct Git dependency.
+
+Behavior:
+
+- works only for direct Git dependencies from `nodus.toml`
+- requires a current `nodus.lock` and uses the locked snapshot as the relay baseline
+- persists maintainer linkage in `.nodus/local.toml`
+- writes `.nodus/.gitignore` so the local relay config stays untracked
+- validates that the linked checkout is a Git repo whose `origin` matches the dependency URL
+- writes only changed source files into the linked checkout; it does not commit or push
+- fails when managed variants disagree or when both the linked source and managed output changed since the locked baseline
+
+Example:
+
+```bash
+nodus relay superpowers --repo-path ../superpowers
+```
+
 ### `nodus sync`
 
 Resolves the root project plus configured dependencies, recursively follows nested dependencies declared in dependency manifests, snapshots their discovered content, writes `nodus.lock`, and emits managed runtime outputs for resolved dependencies.
@@ -437,6 +468,8 @@ Options:
 - `--frozen`: install exact Git revisions from `nodus.lock` and fail if the lockfile is missing or stale
 - `--allow-high-sensitivity`: allow packages that declare `high` sensitivity capabilities
 - `--adapter <agents|claude|codex|cursor|opencode>`: override and persist adapter selection for this repo
+
+When a dependency has a relay link in `.nodus/local.toml`, `sync` fails instead of overwriting pending managed edits that have not been relayed yet.
 
 ### `nodus doctor`
 
@@ -460,6 +493,7 @@ Managed files are tracked in `nodus.lock`. During sync, Nodus:
 - writes or updates managed files
 - removes stale managed files that are no longer desired
 - refuses to overwrite existing unmanaged files
+- refuses to overwrite pending relay edits for dependencies linked through `.nodus/local.toml`
 
 ## Lockfile and Store
 

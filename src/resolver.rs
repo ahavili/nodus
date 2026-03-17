@@ -422,7 +422,13 @@ pub fn resolve_project_from_current_lockfile_in_dir(
     }
 
     let lockfile = Lockfile::read(&lockfile_path)?;
-    let resolution = resolve_project(cwd, cache_root, ResolveMode::Doctor, reporter, Some(&lockfile))?;
+    let resolution = resolve_project(
+        cwd,
+        cache_root,
+        ResolveMode::Doctor,
+        reporter,
+        Some(&lockfile),
+    )?;
     let expected = resolution.to_lockfile(selected_adapters)?;
     if lockfile != expected {
         bail!("{LOCKFILE_NAME} is out of date");

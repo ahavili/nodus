@@ -73,7 +73,10 @@ pub fn ensure_local_gitignore(project_root: &Path) -> Result<()> {
         Vec::new()
     };
 
-    if !lines.iter().any(|line| line.trim() == LOCAL_GITIGNORE_ENTRY) {
+    if !lines
+        .iter()
+        .any(|line| line.trim() == LOCAL_GITIGNORE_ENTRY)
+    {
         lines.push(LOCAL_GITIGNORE_ENTRY.to_string());
     }
 
