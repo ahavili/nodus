@@ -965,8 +965,13 @@ mod tests {
         run_git(path, &["init"]);
         run_git(path, &["config", "user.email", "test@example.com"]);
         run_git(path, &["config", "user.name", "Test User"]);
+        run_git(path, &["config", "core.autocrlf", "false"]);
         run_git(path, &["add", "."]);
         run_git(path, &["commit", "-m", "initial"]);
+    }
+
+    fn toml_path_value(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
     }
 
     fn create_remote_dependency() -> (TempDir, PathBuf) {
@@ -1191,7 +1196,7 @@ target = ".github/prompts/review.md"
 source = "templates"
 target = "docs/templates"
 "#,
-                remote_repo.to_string_lossy()
+                toml_path_value(&remote_repo)
             ),
         );
 
@@ -1259,7 +1264,7 @@ tag = "v0.1.0"
 source = "prompts/review.md"
 target = ".github/prompts/review.md"
 "#,
-                remote_repo.to_string_lossy()
+                toml_path_value(&remote_repo)
             ),
         );
 

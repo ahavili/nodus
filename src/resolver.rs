@@ -1212,7 +1212,7 @@ fn validate_collisions(
         if file.path.exists() && !path_is_owned(&file.path, owned_paths) {
             bail!(
                 "refusing to overwrite unmanaged file {}",
-                file.path.display()
+                display_path(&file.path)
             );
         }
 
@@ -1222,7 +1222,10 @@ fn validate_collisions(
                 break;
             }
             if parent.exists() && parent.is_file() && !path_is_owned(parent, owned_paths) {
-                bail!("refusing to overwrite unmanaged file {}", parent.display());
+                bail!(
+                    "refusing to overwrite unmanaged file {}",
+                    display_path(parent)
+                );
             }
             current = parent.parent();
         }
@@ -1450,6 +1453,7 @@ mod tests {
         run(&["init"]);
         run(&["config", "user.email", "test@example.com"]);
         run(&["config", "user.name", "Test User"]);
+        run(&["config", "core.autocrlf", "false"]);
         run(&["add", "."]);
         run(&["commit", "-m", "initial"]);
     }
