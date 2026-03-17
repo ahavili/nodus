@@ -5,14 +5,15 @@ use anyhow::{Result, bail};
 use rayon::prelude::*;
 use semver::Version;
 
+use crate::execution::ExecutionMode;
 use crate::git::{ensure_git_dependency, latest_tag, prepare_repository_mirror};
 use crate::lockfile::Lockfile;
 use crate::manifest::{
-    DependencySourceKind, DependencySpec, RequestedGitRef, load_dependency_from_dir,
-    load_root_from_dir, write_manifest,
+    DependencySourceKind, DependencySpec, PackageRole, RequestedGitRef, load_dependency_from_dir,
+    load_root_from_dir,
 };
 use crate::report::Reporter;
-use crate::resolver::sync_in_dir;
+use crate::resolver::sync_in_dir_with_loaded_root;
 
 #[derive(Debug, Clone)]
 pub struct UpdateSummary {
@@ -46,6 +47,37 @@ pub fn update_direct_dependencies_in_dir(
     cwd: &Path,
     cache_root: &Path,
     allow_high_sensitivity: bool,
+    reporter: &Reporter,
+) -> Result<UpdateSummary> {
+    update_direct_dependencies_in_dir_mode(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        ExecutionMode::Apply,
+        reporter,
+    )
+}
+
+pub fn update_direct_dependencies_in_dir_dry_run(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    reporter: &Reporter,
+) -> Result<UpdateSummary> {
+    update_direct_dependencies_in_dir_mode(
+        cwd,
+        cache_root,
+        allow_high_sensitivity,
+        ExecutionMode::DryRun,
+        reporter,
+    )
+}
+
+fn update_direct_dependencies_in_dir_mode(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    execution_mode: ExecutionMode,
     reporter: &Reporter,
 ) -> Result<UpdateSummary> {
     crate::relay::ensure_no_pending_relay_edits_in_dir(cwd, cache_root)?;
@@ -122,15 +154,32 @@ pub fn update_direct_dependencies_in_dir(
         }
     }
 
-    if manifest_changed {
-        reporter.status(
-            "Writing",
-            cwd.join(crate::manifest::MANIFEST_FILE).display(),
-        )?;
-        write_manifest(&cwd.join(crate::manifest::MANIFEST_FILE), &root.manifest)?;
-    }
-
-    let sync_summary = sync_in_dir(cwd, cache_root, false, allow_high_sensitivity, reporter)?;
+    let sync_summary = if manifest_changed {
+        let root = root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
+        sync_in_dir_with_loaded_root(
+            cwd,
+            cache_root,
+            false,
+            allow_high_sensitivity,
+            &[],
+            false,
+            execution_mode,
+            root,
+            reporter,
+        )?
+    } else {
+        sync_in_dir_with_loaded_root(
+            cwd,
+            cache_root,
+            false,
+            allow_high_sensitivity,
+            &[],
+            false,
+            execution_mode,
+            root,
+            reporter,
+        )?
+    };
     if updated_count == 0 && sync_summary.package_count == 0 {
         bail!("project contains no packages to sync");
     }

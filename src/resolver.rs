@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 use crate::adapters::{Adapter, Adapters, ManagedFile, build_output_plan};
+use crate::execution::{ExecutionMode, PreviewChange};
 use crate::git::{
     current_rev, ensure_git_dependency, ensure_git_dependency_at_rev, shared_checkout_path,
     shared_repository_path, validate_shared_checkout,
@@ -15,7 +16,7 @@ use crate::git::{
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
 use crate::manifest::{
     DependencyComponent, DependencySourceKind, DependencySpec, LoadedManifest, PackageRole,
-    RequestedGitRef, load_dependency_from_dir, load_root_from_dir, write_manifest,
+    RequestedGitRef, load_dependency_from_dir, load_root_from_dir,
 };
 use crate::paths::display_path;
 use crate::report::Reporter;
@@ -124,6 +125,7 @@ struct ResolveContext<'a> {
     cache_root: &'a Path,
     mode: ResolveMode,
     frozen_lockfile: Option<&'a Lockfile>,
+    root_override: Option<&'a LoadedManifest>,
     reporter: &'a Reporter,
 }
 
@@ -135,6 +137,26 @@ struct ResolvePackageInput {
     selected_components: Option<Vec<DependencyComponent>>,
     direct_managed_paths: Vec<ResolvedManagedPath>,
     extra_package_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedFileWrite {
+    path: PathBuf,
+    contents: Vec<u8>,
+    create: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SyncExecutionPlan {
+    project_root: PathBuf,
+    owned_paths: HashSet<PathBuf>,
+    desired_paths: HashSet<PathBuf>,
+    manifest_write: Option<PlannedFileWrite>,
+    removals: Vec<PathBuf>,
+    managed_writes: Vec<ManagedFile>,
+    lockfile_write: Option<PlannedFileWrite>,
+    warnings: Vec<String>,
+    summary: SyncSummary,
 }
 
 #[allow(dead_code)]
@@ -158,10 +180,13 @@ pub fn sync_with_adapters(
         allow_high_sensitivity,
         adapters,
         sync_on_launch,
+        ExecutionMode::Apply,
+        None,
         reporter,
     )
 }
 
+#[allow(dead_code)]
 pub fn sync_in_dir(
     cwd: &Path,
     cache_root: &Path,
@@ -180,6 +205,8 @@ pub fn sync_in_dir(
         allow_high_sensitivity,
         &[],
         false,
+        ExecutionMode::Apply,
+        None,
         reporter,
     )
 }
@@ -204,6 +231,8 @@ pub fn sync_in_dir_with_adapters(
         allow_high_sensitivity,
         adapters,
         sync_on_launch,
+        ExecutionMode::Apply,
+        None,
         reporter,
     )
 }
@@ -223,10 +252,60 @@ pub fn sync_in_dir_with_adapters_frozen(
         allow_high_sensitivity,
         adapters,
         sync_on_launch,
+        ExecutionMode::Apply,
+        None,
         reporter,
     )
 }
 
+pub fn sync_in_dir_with_adapters_dry_run(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_mode(
+        cwd,
+        cache_root,
+        if locked {
+            SyncMode::Locked
+        } else {
+            SyncMode::Normal
+        },
+        allow_high_sensitivity,
+        adapters,
+        sync_on_launch,
+        ExecutionMode::DryRun,
+        None,
+        reporter,
+    )
+}
+
+pub fn sync_in_dir_with_adapters_frozen_dry_run(
+    cwd: &Path,
+    cache_root: &Path,
+    allow_high_sensitivity: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_mode(
+        cwd,
+        cache_root,
+        SyncMode::Frozen,
+        allow_high_sensitivity,
+        adapters,
+        sync_on_launch,
+        ExecutionMode::DryRun,
+        None,
+        reporter,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn sync_in_dir_with_adapters_mode(
     cwd: &Path,
     cache_root: &Path,
@@ -234,10 +313,14 @@ fn sync_in_dir_with_adapters_mode(
     allow_high_sensitivity: bool,
     adapters: &[Adapter],
     sync_on_launch: bool,
+    execution_mode: ExecutionMode,
+    root_override: Option<LoadedManifest>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
     crate::relay::ensure_no_pending_relay_edits_in_dir(cwd, cache_root)?;
-    let mut root = load_root_from_dir(cwd)?;
+    let has_root_override = root_override.is_some();
+    let original_root = load_root_from_dir(cwd)?;
+    let mut root = root_override.unwrap_or_else(|| original_root.clone());
     let selection = resolve_adapter_selection(
         cwd,
         &root.manifest,
@@ -252,11 +335,6 @@ fn sync_in_dir_with_adapters_mode(
             );
         }
         root.manifest.set_enabled_adapters(&selection.adapters);
-        reporter.status(
-            "Writing",
-            cwd.join(crate::manifest::MANIFEST_FILE).display(),
-        )?;
-        write_manifest(&cwd.join(crate::manifest::MANIFEST_FILE), &root.manifest)?;
     }
     if sync_on_launch {
         if sync_mode.checks_lockfile() {
@@ -266,11 +344,9 @@ fn sync_in_dir_with_adapters_mode(
             );
         }
         root.manifest.set_sync_on_launch(true);
-        reporter.status(
-            "Writing",
-            cwd.join(crate::manifest::MANIFEST_FILE).display(),
-        )?;
-        write_manifest(&cwd.join(crate::manifest::MANIFEST_FILE), &root.manifest)?;
+    }
+    if has_root_override || selection.should_persist || sync_on_launch {
+        root = original_root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
     }
 
     let lockfile_path = cwd.join(LOCKFILE_NAME);
@@ -296,6 +372,7 @@ fn sync_in_dir_with_adapters_mode(
         existing_lockfile
             .as_ref()
             .filter(|_| sync_mode.installs_from_lockfile()),
+        Some(&root),
     )?;
     reporter.status("Checking", "declared capabilities")?;
     enforce_capabilities(&resolution, allow_high_sensitivity, reporter)?;
@@ -345,29 +422,252 @@ fn sync_in_dir_with_adapters_mode(
     }
 
     validate_collisions(planned_files, &owned_paths, cwd)?;
-    prune_stale_files(&owned_paths, &desired_paths, cwd)?;
-    prepare_managed_paths_for_write(planned_files, &owned_paths, cwd)?;
-    reporter.status("Writing", "managed runtime outputs")?;
-    write_managed_files(planned_files)?;
+    let plan = build_sync_execution_plan(
+        &original_root,
+        &root,
+        &lockfile_path,
+        &lockfile,
+        &owned_paths,
+        &desired_paths,
+        planned_files,
+        resolution
+            .warnings
+            .iter()
+            .chain(output_plan.warnings.iter())
+            .cloned()
+            .collect(),
+        SyncSummary {
+            package_count: resolution.packages.len(),
+            adapters: selection.adapters,
+            managed_file_count: planned_files.len(),
+        },
+        sync_mode,
+    )?;
+    execute_sync_plan(&plan, execution_mode, reporter)?;
 
-    if !sync_mode.checks_lockfile() {
-        reporter.status("Writing", lockfile_path.display())?;
-        lockfile.write(&lockfile_path)?;
+    Ok(plan.summary)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sync_in_dir_with_loaded_root(
+    cwd: &Path,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    execution_mode: ExecutionMode,
+    root: LoadedManifest,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
+    sync_in_dir_with_adapters_mode(
+        cwd,
+        cache_root,
+        if locked {
+            SyncMode::Locked
+        } else {
+            SyncMode::Normal
+        },
+        allow_high_sensitivity,
+        adapters,
+        sync_on_launch,
+        execution_mode,
+        Some(root),
+        reporter,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_sync_execution_plan(
+    original_root: &LoadedManifest,
+    working_root: &LoadedManifest,
+    lockfile_path: &Path,
+    lockfile: &Lockfile,
+    owned_paths: &HashSet<PathBuf>,
+    desired_paths: &HashSet<PathBuf>,
+    planned_files: &[ManagedFile],
+    warnings: Vec<String>,
+    summary: SyncSummary,
+    sync_mode: SyncMode,
+) -> Result<SyncExecutionPlan> {
+    let manifest_write = planned_manifest_write(original_root, working_root)?;
+    let mut removals = planned_stale_paths(owned_paths, desired_paths);
+    removals.extend(planned_paths_to_replace(
+        planned_files,
+        owned_paths,
+        &working_root.root,
+    )?);
+    removals.sort();
+    removals.dedup();
+    let lockfile_write = if sync_mode.checks_lockfile() {
+        None
+    } else {
+        Some(planned_lockfile_write(lockfile_path, lockfile)?)
+    };
+
+    Ok(SyncExecutionPlan {
+        project_root: working_root.root.clone(),
+        owned_paths: owned_paths.clone(),
+        desired_paths: desired_paths.clone(),
+        manifest_write,
+        removals,
+        managed_writes: planned_files.to_vec(),
+        lockfile_write,
+        warnings,
+        summary,
+    })
+}
+
+fn execute_sync_plan(
+    plan: &SyncExecutionPlan,
+    execution_mode: ExecutionMode,
+    reporter: &Reporter,
+) -> Result<()> {
+    if execution_mode.is_dry_run() {
+        if let Some(write) = &plan.manifest_write {
+            reporter.preview(&planned_write_preview_change(write))?;
+        }
+        for path in &plan.removals {
+            reporter.preview(&PreviewChange::Remove(path.clone()))?;
+        }
+        if !plan.managed_writes.is_empty() {
+            reporter.status("Preview", "managed runtime outputs")?;
+            for file in &plan.managed_writes {
+                let change = if file.path.exists() {
+                    PreviewChange::Write(file.path.clone())
+                } else {
+                    PreviewChange::Create(file.path.clone())
+                };
+                reporter.preview(&change)?;
+            }
+        }
+        if let Some(write) = &plan.lockfile_write {
+            reporter.preview(&planned_write_preview_change(write))?;
+        }
+    } else {
+        if let Some(write) = &plan.manifest_write {
+            reporter.status("Writing", write.path.display())?;
+            write_atomic(&write.path, &write.contents)?;
+        }
+        prune_stale_files(&plan.owned_paths, &plan.desired_paths, &plan.project_root)?;
+        prepare_managed_paths_for_write(
+            &plan.managed_writes,
+            &plan.owned_paths,
+            &plan.project_root,
+        )?;
+        reporter.status("Writing", "managed runtime outputs")?;
+        write_managed_files(&plan.managed_writes)?;
+        if let Some(write) = &plan.lockfile_write {
+            reporter.status("Writing", write.path.display())?;
+            write_atomic(&write.path, &write.contents)?;
+        }
     }
 
-    for warning in resolution
-        .warnings
-        .iter()
-        .chain(output_plan.warnings.iter())
-    {
+    for warning in &plan.warnings {
         reporter.warning(warning)?;
     }
 
-    Ok(SyncSummary {
-        package_count: resolution.packages.len(),
-        adapters: selection.adapters,
-        managed_file_count: planned_files.len(),
+    Ok(())
+}
+
+fn planned_manifest_write(
+    original_root: &LoadedManifest,
+    working_root: &LoadedManifest,
+) -> Result<Option<PlannedFileWrite>> {
+    let Some(path) = &working_root.manifest_path else {
+        return Ok(None);
+    };
+    let contents = working_root
+        .read_package_file(path)
+        .with_context(|| format!("failed to read manifest {}", path.display()))?;
+    let current = if path.exists() {
+        Some(
+            std::fs::read(path)
+                .with_context(|| format!("failed to read manifest {}", path.display()))?,
+        )
+    } else {
+        None
+    };
+    if original_root.manifest_path.as_deref() == Some(path)
+        && current
+            .as_ref()
+            .is_some_and(|existing| *existing == contents)
+    {
+        Ok(None)
+    } else {
+        Ok(Some(PlannedFileWrite {
+            path: path.clone(),
+            contents,
+            create: !path.exists(),
+        }))
+    }
+}
+
+fn planned_lockfile_write(path: &Path, lockfile: &Lockfile) -> Result<PlannedFileWrite> {
+    let contents = toml::to_string_pretty(lockfile)
+        .context("failed to serialize lockfile")?
+        .into_bytes();
+    Ok(PlannedFileWrite {
+        path: path.to_path_buf(),
+        create: !path.exists(),
+        contents,
     })
+}
+
+fn planned_stale_paths(
+    owned_paths: &HashSet<PathBuf>,
+    desired_paths: &HashSet<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut removals = owned_paths
+        .difference(desired_paths)
+        .filter(|path| fs::symlink_metadata(path).is_ok())
+        .cloned()
+        .collect::<Vec<_>>();
+    removals.sort();
+    removals
+}
+
+fn planned_paths_to_replace(
+    planned_files: &[ManagedFile],
+    owned_paths: &HashSet<PathBuf>,
+    project_root: &Path,
+) -> Result<Vec<PathBuf>> {
+    let mut removed = HashSet::new();
+
+    for file in planned_files {
+        if file.path.is_dir()
+            && path_is_owned(&file.path, owned_paths)
+            && removed.insert(file.path.clone())
+        {
+            continue;
+        }
+
+        let mut current = file.path.parent();
+        while let Some(parent) = current {
+            if parent == project_root {
+                break;
+            }
+            if parent.is_file()
+                && path_is_owned(parent, owned_paths)
+                && removed.insert(parent.to_path_buf())
+            {
+                break;
+            }
+            current = parent.parent();
+        }
+    }
+
+    let mut removals = removed.into_iter().collect::<Vec<_>>();
+    removals.sort();
+    Ok(removals)
+}
+
+fn planned_write_preview_change(write: &PlannedFileWrite) -> PreviewChange {
+    if write.create {
+        PreviewChange::Create(write.path.clone())
+    } else {
+        PreviewChange::Write(write.path.clone())
+    }
 }
 
 #[allow(dead_code)]
@@ -382,7 +682,7 @@ pub fn resolve_project_for_sync(
     cache_root: &Path,
     reporter: &Reporter,
 ) -> Result<Resolution> {
-    resolve_project(root, cache_root, ResolveMode::Sync, reporter, None)
+    resolve_project(root, cache_root, ResolveMode::Sync, reporter, None, None)
 }
 
 pub fn doctor_in_dir(cwd: &Path, cache_root: &Path, reporter: &Reporter) -> Result<DoctorSummary> {
@@ -393,7 +693,7 @@ pub fn doctor_in_dir(cwd: &Path, cache_root: &Path, reporter: &Reporter) -> Resu
         "Checking",
         "manifest, lockfile, shared store, and managed outputs",
     )?;
-    let resolution = resolve_project(cwd, cache_root, ResolveMode::Doctor, reporter, None)?;
+    let resolution = resolve_project(cwd, cache_root, ResolveMode::Doctor, reporter, None, None)?;
     let lockfile_path = cwd.join(LOCKFILE_NAME);
     if !lockfile_path.exists() {
         bail!("missing {}", LOCKFILE_NAME);
@@ -456,6 +756,7 @@ pub fn resolve_project_from_current_lockfile_in_dir(
         ResolveMode::Doctor,
         reporter,
         Some(&lockfile),
+        None,
     )?;
     let expected = resolution.to_lockfile(selected_adapters)?;
     if lockfile != expected {
@@ -499,6 +800,7 @@ fn resolve_project(
     mode: ResolveMode,
     reporter: &Reporter,
     frozen_lockfile: Option<&Lockfile>,
+    root_override: Option<&LoadedManifest>,
 ) -> Result<Resolution> {
     let project_root = root
         .canonicalize()
@@ -507,6 +809,7 @@ fn resolve_project(
         cache_root,
         mode,
         frozen_lockfile,
+        root_override,
         reporter,
     };
     let mut state = ResolverState::default();
@@ -587,7 +890,13 @@ fn resolve_package(
     state.stack.push(package_root.clone());
 
     let manifest = match role {
-        PackageRole::Root => load_root_from_dir(&package_root)?,
+        PackageRole::Root => {
+            if let Some(root_override) = context.root_override {
+                root_override.clone()
+            } else {
+                load_root_from_dir(&package_root)?
+            }
+        }
         PackageRole::Dependency => load_dependency_from_dir(&package_root)?,
     };
 
@@ -989,7 +1298,8 @@ fn compute_package_digest(
                 .strip_prefix(&manifest.root)
                 .with_context(|| format!("failed to make {} relative", file.display()))?
                 .to_path_buf();
-            let contents = fs::read(file)
+            let contents = manifest
+                .read_package_file(file)
                 .with_context(|| format!("failed to read {} for hashing", file.display()))?;
             Ok((relative, contents))
         })
@@ -1548,7 +1858,7 @@ mod tests {
 
     fn resolve_project(root: &Path, cache_root: &Path, mode: ResolveMode) -> Result<Resolution> {
         let reporter = Reporter::silent();
-        super::resolve_project(root, cache_root, mode, &reporter, None)
+        super::resolve_project(root, cache_root, mode, &reporter, None, None)
     }
 
     fn sync_in_dir(

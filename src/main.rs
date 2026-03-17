@@ -1,6 +1,7 @@
 mod adapters;
 mod cache;
 mod cli;
+mod execution;
 mod git;
 mod info;
 mod local_config;

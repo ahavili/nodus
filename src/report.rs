@@ -5,6 +5,8 @@ use anstream::{AutoStream, ColorChoice};
 use anstyle::{AnsiColor, Style};
 use anyhow::Error;
 
+use crate::execution::PreviewChange;
+
 const LABEL_WIDTH: usize = 12;
 
 #[allow(dead_code)]
@@ -85,6 +87,10 @@ impl Reporter {
 
     pub fn line(&self, message: impl std::fmt::Display) -> anyhow::Result<()> {
         self.write_line(&message.to_string())
+    }
+
+    pub fn preview(&self, change: &PreviewChange) -> anyhow::Result<()> {
+        self.note(change.describe())
     }
 
     pub fn color_enabled(&self) -> bool {

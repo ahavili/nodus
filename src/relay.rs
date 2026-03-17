@@ -8,11 +8,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 
 use crate::adapters::{Adapter, Adapters, ArtifactKind, managed_artifact_path, managed_skill_root};
+use crate::execution::{ExecutionMode, PreviewChange};
 use crate::git::{
     git_urls_match, is_git_repository, normalize_git_url, repository_origin_url,
     resolve_dependency_alias,
 };
-use crate::local_config::{LocalConfig, RelayLink};
+use crate::local_config::{LocalConfig, RelayLink, config_path, local_dir};
 use crate::lockfile::LOCKFILE_NAME;
 use crate::manifest::{DependencySourceKind, MANIFEST_FILE, SkillEntry, load_root_from_dir};
 use crate::report::Reporter;
@@ -105,6 +106,41 @@ pub fn relay_dependency_in_dir(
     repo_path_override: Option<&Path>,
     reporter: &Reporter,
 ) -> Result<RelaySummary> {
+    relay_dependency_in_dir_mode(
+        project_root,
+        cache_root,
+        package,
+        repo_path_override,
+        ExecutionMode::Apply,
+        reporter,
+    )
+}
+
+pub fn relay_dependency_in_dir_dry_run(
+    project_root: &Path,
+    cache_root: &Path,
+    package: &str,
+    repo_path_override: Option<&Path>,
+    reporter: &Reporter,
+) -> Result<RelaySummary> {
+    relay_dependency_in_dir_mode(
+        project_root,
+        cache_root,
+        package,
+        repo_path_override,
+        ExecutionMode::DryRun,
+        reporter,
+    )
+}
+
+fn relay_dependency_in_dir_mode(
+    project_root: &Path,
+    cache_root: &Path,
+    package: &str,
+    repo_path_override: Option<&Path>,
+    execution_mode: ExecutionMode,
+    reporter: &Reporter,
+) -> Result<RelaySummary> {
     let mut workspace = load_workspace(project_root, cache_root, reporter)?;
     let dependency = dependency_context(&workspace, package)?;
     let linked_repo = resolve_linked_repo(
@@ -112,6 +148,7 @@ pub fn relay_dependency_in_dir(
         &mut workspace.local_config,
         &dependency,
         repo_path_override,
+        execution_mode,
     )?;
 
     let plan = build_relay_plan(
@@ -128,27 +165,52 @@ pub fn relay_dependency_in_dir(
         );
     }
 
-    reporter.status(
-        "Relaying",
-        format!("managed edits for {}", dependency.alias),
-    )?;
-    for (path, contents) in &plan.updates {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
+    if execution_mode.is_dry_run() {
+        if repo_path_override.is_some() {
+            reporter.preview(&PreviewChange::PersistLocalConfig(config_path(
+                project_root,
+            )))?;
+            let gitignore_path = local_dir(project_root).join(".gitignore");
+            let gitignore_change = if gitignore_path.exists() {
+                PreviewChange::Write(gitignore_path)
+            } else {
+                PreviewChange::Create(gitignore_path)
+            };
+            reporter.preview(&gitignore_change)?;
         }
-        crate::store::write_atomic(path, contents)
-            .with_context(|| format!("failed to write relayed source {}", path.display()))?;
-        reporter.note(format!("updated {}", display_relative(&linked_repo, path)))?;
-    }
-    for path in &plan.noops {
-        reporter.note(format!(
-            "{} already matches managed edits",
-            display_relative(&linked_repo, path)
-        ))?;
-    }
+        reporter.status("Preview", format!("relay edits for {}", dependency.alias))?;
+        for path in plan.updates.keys() {
+            reporter.preview(&PreviewChange::Relay(path.clone()))?;
+        }
+        for path in &plan.noops {
+            reporter.note(format!(
+                "{} already matches managed edits",
+                display_relative(&linked_repo, path)
+            ))?;
+        }
+    } else {
+        reporter.status(
+            "Relaying",
+            format!("managed edits for {}", dependency.alias),
+        )?;
+        for (path, contents) in &plan.updates {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            crate::store::write_atomic(path, contents)
+                .with_context(|| format!("failed to write relayed source {}", path.display()))?;
+            reporter.note(format!("updated {}", display_relative(&linked_repo, path)))?;
+        }
+        for path in &plan.noops {
+            reporter.note(format!(
+                "{} already matches managed edits",
+                display_relative(&linked_repo, path)
+            ))?;
+        }
 
-    workspace.local_config.save_in_dir(project_root)?;
+        workspace.local_config.save_in_dir(project_root)?;
+    }
 
     Ok(RelaySummary {
         alias: dependency.alias,
@@ -346,6 +408,7 @@ fn resolve_linked_repo(
     local_config: &mut LocalConfig,
     dependency: &DependencyContext,
     repo_path_override: Option<&Path>,
+    execution_mode: ExecutionMode,
 ) -> Result<PathBuf> {
     match repo_path_override {
         Some(path) => {
@@ -358,7 +421,9 @@ fn resolve_linked_repo(
                     url: dependency.url.clone(),
                 },
             );
-            local_config.save_in_dir(project_root)?;
+            if !execution_mode.is_dry_run() {
+                local_config.save_in_dir(project_root)?;
+            }
             Ok(linked_repo)
         }
         None => resolve_existing_link(local_config, dependency),

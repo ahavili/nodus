@@ -6,12 +6,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 
 use crate::adapters::Adapter;
+use crate::execution::ExecutionMode;
 use crate::manifest::{
     DependencyComponent, DependencySpec, MANIFEST_FILE, PackageRole, RequestedGitRef,
-    load_dependency_from_dir, load_from_dir, normalize_dependency_alias, write_manifest,
+    load_dependency_from_dir, load_from_dir, normalize_dependency_alias,
 };
 use crate::report::Reporter;
-use crate::resolver::{sync_in_dir, sync_in_dir_with_adapters};
+use crate::resolver::sync_in_dir_with_loaded_root;
 use crate::selection::{resolve_adapter_selection, should_prompt_for_adapter};
 
 #[derive(Debug, Clone)]
@@ -82,6 +83,41 @@ pub fn add_dependency_in_dir_with_adapters(
     options: AddDependencyOptions<'_>,
     reporter: &Reporter,
 ) -> Result<AddSummary> {
+    add_dependency_in_dir_with_adapters_mode(
+        project_root,
+        cache_root,
+        url,
+        options,
+        ExecutionMode::Apply,
+        reporter,
+    )
+}
+
+pub fn add_dependency_in_dir_with_adapters_dry_run(
+    project_root: &Path,
+    cache_root: &Path,
+    url: &str,
+    options: AddDependencyOptions<'_>,
+    reporter: &Reporter,
+) -> Result<AddSummary> {
+    add_dependency_in_dir_with_adapters_mode(
+        project_root,
+        cache_root,
+        url,
+        options,
+        ExecutionMode::DryRun,
+        reporter,
+    )
+}
+
+fn add_dependency_in_dir_with_adapters_mode(
+    project_root: &Path,
+    cache_root: &Path,
+    url: &str,
+    options: AddDependencyOptions<'_>,
+    execution_mode: ExecutionMode,
+    reporter: &Reporter,
+) -> Result<AddSummary> {
     let normalized_url = normalize_git_url(url);
     let alias = normalize_alias_from_url(&normalized_url)?;
     let checkout =
@@ -142,16 +178,16 @@ pub fn add_dependency_in_dir_with_adapters(
     if options.sync_on_launch {
         root.manifest.set_sync_on_launch(true);
     }
-
-    reporter.status("Writing", project_root.join(MANIFEST_FILE).display())?;
-    write_manifest(&project_root.join(MANIFEST_FILE), &root.manifest)?;
-    let sync_summary = sync_in_dir_with_adapters(
+    let root = root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
+    let sync_summary = sync_in_dir_with_loaded_root(
         project_root,
         cache_root,
         false,
         false,
         options.adapters,
         false,
+        execution_mode,
+        root,
         reporter,
     )?;
 
@@ -169,6 +205,37 @@ pub fn remove_dependency_in_dir(
     package: &str,
     reporter: &Reporter,
 ) -> Result<RemoveSummary> {
+    remove_dependency_in_dir_mode(
+        project_root,
+        cache_root,
+        package,
+        ExecutionMode::Apply,
+        reporter,
+    )
+}
+
+pub fn remove_dependency_in_dir_dry_run(
+    project_root: &Path,
+    cache_root: &Path,
+    package: &str,
+    reporter: &Reporter,
+) -> Result<RemoveSummary> {
+    remove_dependency_in_dir_mode(
+        project_root,
+        cache_root,
+        package,
+        ExecutionMode::DryRun,
+        reporter,
+    )
+}
+
+fn remove_dependency_in_dir_mode(
+    project_root: &Path,
+    cache_root: &Path,
+    package: &str,
+    execution_mode: ExecutionMode,
+    reporter: &Reporter,
+) -> Result<RemoveSummary> {
     crate::relay::ensure_no_pending_relay_edits_in_dir(project_root, cache_root)?;
     let mut root = load_from_dir(project_root, PackageRole::Root)?;
     let alias = resolve_dependency_alias(&root.manifest.dependencies, package)?;
@@ -180,10 +247,18 @@ pub fn remove_dependency_in_dir(
         ),
     )?;
     root.manifest.dependencies.remove(&alias);
-
-    reporter.status("Writing", project_root.join(MANIFEST_FILE).display())?;
-    write_manifest(&project_root.join(MANIFEST_FILE), &root.manifest)?;
-    let sync_summary = sync_in_dir(project_root, cache_root, false, false, reporter)?;
+    let root = root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
+    let sync_summary = sync_in_dir_with_loaded_root(
+        project_root,
+        cache_root,
+        false,
+        false,
+        &[],
+        false,
+        execution_mode,
+        root,
+        reporter,
+    )?;
 
     Ok(RemoveSummary {
         alias,

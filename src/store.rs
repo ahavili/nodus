@@ -115,7 +115,11 @@ fn snapshot_package(
                 format!("failed to create snapshot directory {}", parent.display())
             })?;
         }
-        fs::copy(&file, &target).with_context(|| {
+        let contents = package
+            .manifest
+            .read_package_file(&file)
+            .with_context(|| format!("failed to read {} for snapshot", file.display()))?;
+        write_atomic(&target, &contents).with_context(|| {
             format!(
                 "failed to copy {} into snapshot {}",
                 file.display(),

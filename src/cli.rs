@@ -71,11 +71,21 @@ enum Command {
             help = "Persist project startup hooks so supported tools run `nodus sync` when they open this repository"
         )]
         sync_on_launch: bool,
+        #[arg(
+            long = "dry-run",
+            help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
+        )]
+        dry_run: bool,
     },
     #[command(about = "Remove a dependency and prune its managed outputs")]
     Remove {
         #[arg(help = "Dependency alias or repository reference to remove")]
         package: String,
+        #[arg(
+            long = "dry-run",
+            help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
+        )]
+        dry_run: bool,
     },
     #[command(about = "Display resolved package metadata")]
     Info {
@@ -121,6 +131,11 @@ enum Command {
             help = "Allow packages that declare high-sensitivity capabilities"
         )]
         allow_high_sensitivity: bool,
+        #[arg(
+            long = "dry-run",
+            help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
+        )]
+        dry_run: bool,
     },
     #[command(about = "Relay linked managed edits back into a maintainer checkout")]
     Relay {
@@ -133,9 +148,21 @@ enum Command {
             help = "Keep watching managed outputs and relay new edits automatically"
         )]
         watch: bool,
+        #[arg(
+            long = "dry-run",
+            conflicts_with = "watch",
+            help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
+        )]
+        dry_run: bool,
     },
     #[command(about = "Create a minimal nodus.toml and example skill")]
-    Init,
+    Init {
+        #[arg(
+            long = "dry-run",
+            help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
+        )]
+        dry_run: bool,
+    },
     #[command(about = "Resolve dependencies and write managed runtime outputs")]
     Sync {
         #[arg(long, help = "Fail if nodus.lock would change")]
@@ -161,6 +188,11 @@ enum Command {
             help = "Persist project startup hooks so supported tools run `nodus sync` when they open this repository"
         )]
         sync_on_launch: bool,
+        #[arg(
+            long = "dry-run",
+            help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
+        )]
+        dry_run: bool,
     },
     #[command(about = "Validate lockfile, shared store, and managed output consistency")]
     Doctor,
@@ -203,39 +235,81 @@ fn run_command_in_dir(
             adapter,
             component,
             sync_on_launch,
+            dry_run,
         } => {
-            let summary = crate::git::add_dependency_in_dir_with_adapters(
-                cwd,
-                cache_root,
-                &url,
-                crate::git::AddDependencyOptions {
-                    git_ref: requested_git_ref(
-                        tag.as_deref(),
-                        branch.as_deref(),
-                        revision.as_deref(),
-                    )?,
-                    adapters: &adapter,
-                    components: &component,
-                    sync_on_launch,
-                },
-                reporter,
-            )?;
-            reporter.finish(format!(
-                "added {} {} with adapters [{}]; wrote {} managed files",
-                summary.alias,
-                summary.reference,
-                format_adapters(&summary.adapters),
-                summary.managed_file_count,
-            ))?;
+            let summary = if dry_run {
+                crate::git::add_dependency_in_dir_with_adapters_dry_run(
+                    cwd,
+                    cache_root,
+                    &url,
+                    crate::git::AddDependencyOptions {
+                        git_ref: requested_git_ref(
+                            tag.as_deref(),
+                            branch.as_deref(),
+                            revision.as_deref(),
+                        )?,
+                        adapters: &adapter,
+                        components: &component,
+                        sync_on_launch,
+                    },
+                    reporter,
+                )?
+            } else {
+                crate::git::add_dependency_in_dir_with_adapters(
+                    cwd,
+                    cache_root,
+                    &url,
+                    crate::git::AddDependencyOptions {
+                        git_ref: requested_git_ref(
+                            tag.as_deref(),
+                            branch.as_deref(),
+                            revision.as_deref(),
+                        )?,
+                        adapters: &adapter,
+                        components: &component,
+                        sync_on_launch,
+                    },
+                    reporter,
+                )?
+            };
+            let message = if dry_run {
+                format!(
+                    "dry run: would add {} {} with adapters [{}]; would write {} managed files",
+                    summary.alias,
+                    summary.reference,
+                    format_adapters(&summary.adapters),
+                    summary.managed_file_count,
+                )
+            } else {
+                format!(
+                    "added {} {} with adapters [{}]; wrote {} managed files",
+                    summary.alias,
+                    summary.reference,
+                    format_adapters(&summary.adapters),
+                    summary.managed_file_count,
+                )
+            };
+            reporter.finish(message)?;
             Ok(())
         }
-        Command::Remove { package } => {
-            let summary =
-                crate::git::remove_dependency_in_dir(cwd, cache_root, &package, reporter)?;
-            reporter.finish(format!(
-                "removed {} and wrote {} managed files",
-                summary.alias, summary.managed_file_count,
-            ))?;
+        Command::Remove { package, dry_run } => {
+            let summary = if dry_run {
+                crate::git::remove_dependency_in_dir_dry_run(cwd, cache_root, &package, reporter)?
+            } else {
+                crate::git::remove_dependency_in_dir(cwd, cache_root, &package, reporter)?
+            };
+            let message = if dry_run {
+                format!(
+                    "dry run: would remove {} and would write {} managed files",
+                    summary.alias, summary.managed_file_count,
+                )
+            } else {
+                format!(
+                    "removed {} and wrote {} managed files",
+                    summary.alias, summary.managed_file_count,
+                )
+            };
+            reporter.finish(message)?;
             Ok(())
         }
         Command::Info {
@@ -293,36 +367,62 @@ fn run_command_in_dir(
         }
         Command::Update {
             allow_high_sensitivity,
+            dry_run,
         } => {
-            let summary = crate::update::update_direct_dependencies_in_dir(
-                cwd,
-                cache_root,
-                allow_high_sensitivity,
-                reporter,
-            )?;
-            reporter.finish(format!(
-                "updated {} direct dependencies; wrote {} managed files",
-                summary.updated_count, summary.managed_file_count
-            ))?;
+            let summary = if dry_run {
+                crate::update::update_direct_dependencies_in_dir_dry_run(
+                    cwd,
+                    cache_root,
+                    allow_high_sensitivity,
+                    reporter,
+                )?
+            } else {
+                crate::update::update_direct_dependencies_in_dir(
+                    cwd,
+                    cache_root,
+                    allow_high_sensitivity,
+                    reporter,
+                )?
+            };
+            let message = if dry_run {
+                format!(
+                    "dry run: would update {} direct dependencies; would write {} managed files",
+                    summary.updated_count, summary.managed_file_count
+                )
+            } else {
+                format!(
+                    "updated {} direct dependencies; wrote {} managed files",
+                    summary.updated_count, summary.managed_file_count
+                )
+            };
+            reporter.finish(message)?;
             Ok(())
         }
-        Command::Init => {
-            let summary = crate::manifest::scaffold_init_in_dir(cwd, reporter)?;
-            reporter.finish(format!(
-                "created {}",
-                summary
-                    .created_paths
-                    .iter()
-                    .map(|path| display_path(path))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ))?;
+        Command::Init { dry_run } => {
+            let summary = if dry_run {
+                crate::manifest::scaffold_init_in_dir_dry_run(cwd, reporter)?
+            } else {
+                crate::manifest::scaffold_init_in_dir(cwd, reporter)?
+            };
+            let created = summary
+                .created_paths
+                .iter()
+                .map(|path| display_path(path))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let message = if dry_run {
+                format!("dry run: would create {created}")
+            } else {
+                format!("created {created}")
+            };
+            reporter.finish(message)?;
             Ok(())
         }
         Command::Relay {
             package,
             repo_path,
             watch,
+            dry_run,
         } => {
             if watch {
                 crate::relay::watch_dependency_in_dir(
@@ -333,19 +433,39 @@ fn run_command_in_dir(
                     reporter,
                 )
             } else {
-                let summary = crate::relay::relay_dependency_in_dir(
-                    cwd,
-                    cache_root,
-                    &package,
-                    repo_path.as_deref(),
-                    reporter,
-                )?;
-                reporter.finish(format!(
-                    "relayed {} into {}; updated {} source files",
-                    summary.alias,
-                    display_path(&summary.linked_repo),
-                    summary.updated_file_count,
-                ))?;
+                let summary = if dry_run {
+                    crate::relay::relay_dependency_in_dir_dry_run(
+                        cwd,
+                        cache_root,
+                        &package,
+                        repo_path.as_deref(),
+                        reporter,
+                    )?
+                } else {
+                    crate::relay::relay_dependency_in_dir(
+                        cwd,
+                        cache_root,
+                        &package,
+                        repo_path.as_deref(),
+                        reporter,
+                    )?
+                };
+                let message = if dry_run {
+                    format!(
+                        "dry run: would relay {} into {}; would update {} source files",
+                        summary.alias,
+                        display_path(&summary.linked_repo),
+                        summary.updated_file_count,
+                    )
+                } else {
+                    format!(
+                        "relayed {} into {}; updated {} source files",
+                        summary.alias,
+                        display_path(&summary.linked_repo),
+                        summary.updated_file_count,
+                    )
+                };
+                reporter.finish(message)?;
                 Ok(())
             }
         }
@@ -355,29 +475,58 @@ fn run_command_in_dir(
             allow_high_sensitivity,
             adapter,
             sync_on_launch,
+            dry_run,
         } => {
             let summary = if frozen {
-                crate::resolver::sync_in_dir_with_adapters_frozen(
-                    cwd,
-                    cache_root,
-                    allow_high_sensitivity,
-                    &adapter,
-                    sync_on_launch,
-                    reporter,
-                )?
+                if dry_run {
+                    crate::resolver::sync_in_dir_with_adapters_frozen_dry_run(
+                        cwd,
+                        cache_root,
+                        allow_high_sensitivity,
+                        &adapter,
+                        sync_on_launch,
+                        reporter,
+                    )?
+                } else {
+                    crate::resolver::sync_in_dir_with_adapters_frozen(
+                        cwd,
+                        cache_root,
+                        allow_high_sensitivity,
+                        &adapter,
+                        sync_on_launch,
+                        reporter,
+                    )?
+                }
             } else {
-                crate::resolver::sync_in_dir_with_adapters(
-                    cwd,
-                    cache_root,
-                    locked,
-                    allow_high_sensitivity,
-                    &adapter,
-                    sync_on_launch,
-                    reporter,
-                )?
+                if dry_run {
+                    crate::resolver::sync_in_dir_with_adapters_dry_run(
+                        cwd,
+                        cache_root,
+                        locked,
+                        allow_high_sensitivity,
+                        &adapter,
+                        sync_on_launch,
+                        reporter,
+                    )?
+                } else {
+                    crate::resolver::sync_in_dir_with_adapters(
+                        cwd,
+                        cache_root,
+                        locked,
+                        allow_high_sensitivity,
+                        &adapter,
+                        sync_on_launch,
+                        reporter,
+                    )?
+                }
             };
             reporter.finish(format!(
-                "{} packages, adapters [{}], {} managed files",
+                "{}{} packages, adapters [{}], {} managed files",
+                if dry_run {
+                    "dry run: would resolve "
+                } else {
+                    ""
+                },
                 summary.package_count,
                 format_adapters(&summary.adapters),
                 summary.managed_file_count,
@@ -423,13 +572,14 @@ fn requested_git_ref<'a>(
 mod tests {
     use std::fs;
     use std::io::{self, Write};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command as ProcessCommand;
     use std::sync::{Arc, Mutex};
 
     use super::{Cli, Command, run_command_in_dir};
     use clap::Parser;
     use tempfile::TempDir;
+    use walkdir::WalkDir;
 
     use crate::adapters::Adapter;
     use crate::report::{ColorMode, Reporter};
@@ -519,12 +669,26 @@ mod tests {
         buffer.contents()
     }
 
+    fn read_optional(path: &Path) -> Option<Vec<u8>> {
+        fs::read(path).ok()
+    }
+
+    fn first_file_under(root: &Path, file_name: &str) -> PathBuf {
+        WalkDir::new(root)
+            .into_iter()
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_type().is_file() && entry.file_name() == file_name)
+            .unwrap()
+            .path()
+            .to_path_buf()
+    }
+
     #[test]
     fn parses_remove_subcommand() {
         let cli = Cli::try_parse_from(["nodus", "remove", "playbook_ios"]).unwrap();
 
         match cli.command {
-            Command::Remove { package } => assert_eq!(package, "playbook_ios"),
+            Command::Remove { package, .. } => assert_eq!(package, "playbook_ios"),
             other => panic!("expected remove command, got {other:?}"),
         }
     }
@@ -613,6 +777,7 @@ mod tests {
                 package,
                 repo_path,
                 watch,
+                ..
             } => {
                 assert_eq!(package, "wenext-limited/playbook-ios");
                 assert_eq!(repo_path.as_deref(), Some(Path::new("/tmp/playbook-ios")));
@@ -629,9 +794,44 @@ mod tests {
         match cli.command {
             Command::Update {
                 allow_high_sensitivity,
+                ..
             } => assert!(allow_high_sensitivity),
             other => panic!("expected update command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_dry_run_flags_for_mutating_commands() {
+        let add = Cli::try_parse_from(["nodus", "add", "example/repo", "--dry-run"]).unwrap();
+        let remove = Cli::try_parse_from(["nodus", "remove", "example/repo", "--dry-run"]).unwrap();
+        let update = Cli::try_parse_from(["nodus", "update", "--dry-run"]).unwrap();
+        let relay = Cli::try_parse_from(["nodus", "relay", "example/repo", "--dry-run"]).unwrap();
+        let init = Cli::try_parse_from(["nodus", "init", "--dry-run"]).unwrap();
+        let sync = Cli::try_parse_from(["nodus", "sync", "--dry-run"]).unwrap();
+
+        assert!(matches!(add.command, Command::Add { dry_run: true, .. }));
+        assert!(matches!(
+            remove.command,
+            Command::Remove { dry_run: true, .. }
+        ));
+        assert!(matches!(
+            update.command,
+            Command::Update { dry_run: true, .. }
+        ));
+        assert!(matches!(
+            relay.command,
+            Command::Relay { dry_run: true, .. }
+        ));
+        assert!(matches!(init.command, Command::Init { dry_run: true }));
+        assert!(matches!(sync.command, Command::Sync { dry_run: true, .. }));
+    }
+
+    #[test]
+    fn rejects_relay_watch_with_dry_run() {
+        let error = Cli::try_parse_from(["nodus", "relay", "example/repo", "--watch", "--dry-run"])
+            .unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -667,6 +867,23 @@ mod tests {
         assert!(help.contains("Select one or more adapters to persist for this repository"));
         assert!(help.contains("Select which dependency components to install from the package"));
         assert!(help.contains("Persist project startup hooks"));
+    }
+
+    #[test]
+    fn mutating_subcommand_help_mentions_dry_run() {
+        let mut root = <Cli as clap::CommandFactory>::command();
+        for name in ["add", "remove", "update", "relay", "init", "sync"] {
+            let help = root
+                .find_subcommand_mut(name)
+                .unwrap()
+                .render_long_help()
+                .to_string();
+            assert!(help.contains("--dry-run"), "{name} help missing dry-run");
+            assert!(
+                help.contains("may still populate the shared store"),
+                "{name} help missing shared-store explanation"
+            );
+        }
     }
 
     #[test]
@@ -807,12 +1024,26 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let cache = TempDir::new().unwrap();
 
-        let output = run_command_output(Command::Init, temp.path(), cache.path());
+        let output =
+            run_command_output(Command::Init { dry_run: false }, temp.path(), cache.path());
 
         assert!(output.contains("Creating"));
         assert!(output.contains("nodus.toml"));
         assert!(output.contains("skills/example/SKILL.md"));
         assert!(output.contains("Finished"));
+    }
+
+    #[test]
+    fn init_dry_run_previews_without_writing() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+
+        let output = run_command_output(Command::Init { dry_run: true }, temp.path(), cache.path());
+
+        assert!(output.contains("would create"));
+        assert!(output.contains("dry run: would create"));
+        assert!(!temp.path().join("nodus.toml").exists());
+        assert!(!temp.path().join("skills/example/SKILL.md").exists());
     }
 
     #[test]
@@ -861,6 +1092,7 @@ version = "0.1.0"
                 adapter: vec![Adapter::Codex],
                 component: vec![],
                 sync_on_launch: false,
+                dry_run: false,
             },
             temp.path(),
             cache.path(),
@@ -870,6 +1102,34 @@ version = "0.1.0"
         assert!(output.contains("latest tag"));
         assert!(output.contains("Adding"));
         assert!(output.contains("Finished"));
+    }
+
+    #[test]
+    fn add_dry_run_previews_without_writing_project_files() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let (_repo, url) = create_git_dependency();
+
+        let output = run_command_output(
+            Command::Add {
+                url,
+                tag: None,
+                branch: None,
+                revision: None,
+                adapter: vec![Adapter::Codex],
+                component: vec![],
+                sync_on_launch: false,
+                dry_run: true,
+            },
+            temp.path(),
+            cache.path(),
+        );
+
+        assert!(output.contains("dry run: would added") || output.contains("dry run: would add"));
+        assert!(output.contains("would create"));
+        assert!(!temp.path().join("nodus.toml").exists());
+        assert!(!temp.path().join("nodus.lock").exists());
+        assert!(!temp.path().join(".codex").exists());
     }
 
     #[test]
@@ -894,6 +1154,7 @@ justification = "Run checks."
                 allow_high_sensitivity: true,
                 adapter: vec![],
                 sync_on_launch: false,
+                dry_run: false,
             },
             temp.path(),
             cache.path(),
@@ -904,6 +1165,31 @@ justification = "Run checks."
         assert!(output.contains("Snapshotting"));
         assert!(output.contains("note: capability root shell.exec (high)"));
         assert!(output.contains("Finished"));
+    }
+
+    #[test]
+    fn sync_dry_run_previews_without_writing_project_files() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+
+        let output = run_command_output(
+            Command::Sync {
+                locked: false,
+                frozen: false,
+                allow_high_sensitivity: false,
+                adapter: vec![Adapter::Codex],
+                sync_on_launch: true,
+                dry_run: true,
+            },
+            temp.path(),
+            cache.path(),
+        );
+
+        assert!(output.contains("would create"));
+        assert!(output.contains("dry run: would resolve"));
+        assert!(!temp.path().join("nodus.toml").exists());
+        assert!(!temp.path().join("nodus.lock").exists());
+        assert!(!temp.path().join(".codex").exists());
     }
 
     #[test]
@@ -937,6 +1223,7 @@ justification = "Run checks."
                 adapter: vec![Adapter::Codex],
                 component: vec![],
                 sync_on_launch: false,
+                dry_run: false,
             },
             temp.path(),
             cache.path(),
@@ -947,6 +1234,7 @@ justification = "Run checks."
         let output = run_command_output(
             Command::Update {
                 allow_high_sensitivity: false,
+                dry_run: false,
             },
             temp.path(),
             cache.path(),
@@ -955,5 +1243,246 @@ justification = "Run checks."
         assert!(output.contains("Checking"));
         assert!(output.contains("Resolving"));
         assert!(output.contains("Finished"));
+    }
+
+    #[test]
+    fn remove_dry_run_keeps_manifest_and_lockfile_unchanged() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let (_repo, url) = create_git_dependency();
+
+        run_command_in_dir(
+            Command::Add {
+                url,
+                tag: None,
+                branch: None,
+                revision: None,
+                adapter: vec![Adapter::Codex],
+                component: vec![],
+                sync_on_launch: false,
+                dry_run: false,
+            },
+            temp.path(),
+            cache.path(),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let alias = crate::manifest::load_root_from_dir(temp.path())
+            .unwrap()
+            .manifest
+            .dependencies
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let manifest_before = read_optional(&temp.path().join("nodus.toml")).unwrap();
+        let lockfile_before = read_optional(&temp.path().join("nodus.lock")).unwrap();
+
+        let output = run_command_output(
+            Command::Remove {
+                package: alias,
+                dry_run: true,
+            },
+            temp.path(),
+            cache.path(),
+        );
+
+        assert!(output.contains("dry run: would remove"));
+        assert_eq!(
+            read_optional(&temp.path().join("nodus.toml")).unwrap(),
+            manifest_before
+        );
+        assert_eq!(
+            read_optional(&temp.path().join("nodus.lock")).unwrap(),
+            lockfile_before
+        );
+    }
+
+    #[test]
+    fn update_dry_run_keeps_manifest_and_lockfile_unchanged() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let (repo, url) = create_git_dependency();
+
+        run_command_in_dir(
+            Command::Add {
+                url,
+                tag: Some("v0.1.0".into()),
+                branch: None,
+                revision: None,
+                adapter: vec![Adapter::Codex],
+                component: vec![],
+                sync_on_launch: false,
+                dry_run: false,
+            },
+            temp.path(),
+            cache.path(),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let output = ProcessCommand::new("git")
+            .args(["tag", "v0.2.0"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let manifest_before = read_optional(&temp.path().join("nodus.toml")).unwrap();
+        let lockfile_before = read_optional(&temp.path().join("nodus.lock")).unwrap();
+
+        let output = run_command_output(
+            Command::Update {
+                allow_high_sensitivity: false,
+                dry_run: true,
+            },
+            temp.path(),
+            cache.path(),
+        );
+
+        assert!(output.contains("dry run: would update"));
+        assert_eq!(
+            read_optional(&temp.path().join("nodus.toml")).unwrap(),
+            manifest_before
+        );
+        assert_eq!(
+            read_optional(&temp.path().join("nodus.lock")).unwrap(),
+            lockfile_before
+        );
+    }
+
+    #[test]
+    fn sync_dry_run_locked_and_frozen_leave_state_unchanged() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let (_repo, url) = create_git_dependency();
+
+        run_command_in_dir(
+            Command::Add {
+                url,
+                tag: None,
+                branch: None,
+                revision: None,
+                adapter: vec![Adapter::Codex],
+                component: vec![],
+                sync_on_launch: false,
+                dry_run: false,
+            },
+            temp.path(),
+            cache.path(),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let manifest_before = read_optional(&temp.path().join("nodus.toml")).unwrap();
+        let lockfile_before = read_optional(&temp.path().join("nodus.lock")).unwrap();
+
+        let locked_output = run_command_output(
+            Command::Sync {
+                locked: true,
+                frozen: false,
+                allow_high_sensitivity: false,
+                adapter: vec![],
+                sync_on_launch: false,
+                dry_run: true,
+            },
+            temp.path(),
+            cache.path(),
+        );
+        let frozen_output = run_command_output(
+            Command::Sync {
+                locked: false,
+                frozen: true,
+                allow_high_sensitivity: false,
+                adapter: vec![],
+                sync_on_launch: false,
+                dry_run: true,
+            },
+            temp.path(),
+            cache.path(),
+        );
+
+        assert!(locked_output.contains("dry run: would resolve"));
+        assert!(frozen_output.contains("dry run: would resolve"));
+        assert_eq!(
+            read_optional(&temp.path().join("nodus.toml")).unwrap(),
+            manifest_before
+        );
+        assert_eq!(
+            read_optional(&temp.path().join("nodus.lock")).unwrap(),
+            lockfile_before
+        );
+    }
+
+    #[test]
+    fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
+        let temp = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let (repo, url) = create_git_dependency();
+
+        let output = ProcessCommand::new("git")
+            .args(["remote", "add", "origin", &repo.path().to_string_lossy()])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        run_command_in_dir(
+            Command::Add {
+                url,
+                tag: None,
+                branch: None,
+                revision: None,
+                adapter: vec![Adapter::Codex],
+                component: vec![],
+                sync_on_launch: false,
+                dry_run: false,
+            },
+            temp.path(),
+            cache.path(),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        let managed_skill = first_file_under(&temp.path().join(".codex"), "SKILL.md");
+        write_file(
+            &managed_skill,
+            "---\nname: Review\ndescription: Example skill.\n---\n# Edited\n",
+        );
+        let repo_skill = repo.path().join("skills/review/SKILL.md");
+        let repo_before = read_optional(&repo_skill).unwrap();
+
+        let output = run_command_output(
+            Command::Relay {
+                package: crate::manifest::load_root_from_dir(temp.path())
+                    .unwrap()
+                    .manifest
+                    .dependencies
+                    .keys()
+                    .next()
+                    .unwrap()
+                    .clone(),
+                repo_path: Some(repo.path().to_path_buf()),
+                watch: false,
+                dry_run: true,
+            },
+            temp.path(),
+            cache.path(),
+        );
+
+        assert!(output.contains("would persist local config"));
+        assert!(output.contains("would relay"));
+        assert_eq!(read_optional(&repo_skill).unwrap(), repo_before);
+        assert!(!temp.path().join(".nodus/local.toml").exists());
+        assert!(!temp.path().join(".nodus/.gitignore").exists());
     }
 }
