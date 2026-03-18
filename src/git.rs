@@ -399,8 +399,22 @@ fn latest_tag_name(path: &Path) -> Result<Option<String>> {
 }
 
 pub fn default_branch(path: &Path) -> Result<String> {
+    if let Ok(head) = remote_head_branch(path) {
+        return Ok(head);
+    }
+
     git_output(path, ["symbolic-ref", "--short", "HEAD"])
         .with_context(|| format!("failed to determine default branch for {}", path.display()))
+}
+
+fn remote_head_branch(path: &Path) -> Result<String> {
+    let output = git_output(path, ["ls-remote", "--symref", "origin", "HEAD"])?;
+    let head = output
+        .lines()
+        .find_map(|line| line.strip_prefix("ref: refs/heads/")?.split_once('\t'))
+        .and_then(|(branch, target)| (target == "HEAD").then_some(branch))
+        .ok_or_else(|| anyhow!("failed to determine remote HEAD for {}", path.display()))?;
+    Ok(head.to_string())
 }
 
 pub fn normalize_git_url(url: &str) -> String {
@@ -683,7 +697,7 @@ fn ensure_shared_checkout(
                 ));
             }
             Err(_) => {
-                remove_invalid_shared_checkout(checkout_path)?;
+                remove_invalid_shared_checkout(checkout_path, mirror_path)?;
             }
         }
     }
@@ -710,6 +724,7 @@ fn ensure_shared_checkout(
             normalized_url
         ),
     )?;
+    clear_stale_shared_checkout_registration(mirror_path, checkout_path);
     git_run(mirror_path, ["config", "core.autocrlf", "false"])?;
     git_run(
         mirror_path,
@@ -744,7 +759,9 @@ fn ensure_shared_checkout(
     )
 }
 
-fn remove_invalid_shared_checkout(checkout_path: &Path) -> Result<()> {
+fn remove_invalid_shared_checkout(checkout_path: &Path, mirror_path: &Path) -> Result<()> {
+    clear_stale_shared_checkout_registration(mirror_path, checkout_path);
+
     match fs::remove_dir_all(checkout_path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -755,6 +772,14 @@ fn remove_invalid_shared_checkout(checkout_path: &Path) -> Result<()> {
             )
         }),
     }
+}
+
+fn clear_stale_shared_checkout_registration(mirror_path: &Path, checkout_path: &Path) {
+    let checkout = checkout_path.to_string_lossy();
+    let _ = git_run(
+        mirror_path,
+        ["worktree", "remove", "--force", checkout.as_ref()],
+    );
 }
 
 fn short_display_rev(rev: &str) -> String {
@@ -1052,6 +1077,75 @@ mod tests {
     }
 
     #[test]
+    fn refreshes_default_branch_when_the_remote_head_changes() {
+        let cache_root = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        write_file(
+            &repo.path().join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+        );
+        init_git_repo(repo.path());
+        rename_current_branch(repo.path(), "main");
+
+        let reporter = Reporter::silent();
+        let initial = ensure_git_dependency(
+            cache_root.path(),
+            &repo.path().to_string_lossy(),
+            None,
+            true,
+            &reporter,
+        )
+        .unwrap();
+        assert_eq!(initial.branch.as_deref(), Some("main"));
+
+        let output = Command::new("git")
+            .args(["checkout", "-b", "trunk"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        write_file(&repo.path().join("rules/policy.md"), "keep moving\n");
+        let output = Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new("git")
+            .args(["commit", "-m", "switch default branch"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let updated = ensure_git_dependency(
+            cache_root.path(),
+            &repo.path().to_string_lossy(),
+            None,
+            true,
+            &reporter,
+        )
+        .unwrap();
+
+        assert_eq!(updated.tag, None);
+        assert_eq!(updated.branch.as_deref(), Some("trunk"));
+        assert_eq!(updated.rev, current_rev(repo.path()).unwrap());
+    }
+
+    #[test]
     fn computes_shared_repository_path_from_the_normalized_url() {
         let cache_root = TempDir::new().unwrap();
         let path =
@@ -1106,5 +1200,31 @@ mod tests {
 
         assert_eq!(recreated, mirror_path);
         assert!(is_bare_repository(&mirror_path).unwrap());
+    }
+
+    #[test]
+    fn recreates_missing_registered_shared_checkouts() {
+        let cache_root = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        write_file(
+            &repo.path().join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review code safely.\n---\n# Review\n",
+        );
+        init_git_repo(repo.path());
+        rename_current_branch(repo.path(), "main");
+
+        let url = repo.path().to_string_lossy().to_string();
+        let reporter = Reporter::silent();
+        let initial =
+            ensure_git_dependency(cache_root.path(), &url, None, true, &reporter).unwrap();
+
+        fs::remove_dir_all(&initial.path).unwrap();
+
+        let recovered =
+            ensure_git_dependency(cache_root.path(), &url, None, true, &reporter).unwrap();
+
+        assert_eq!(recovered.path, initial.path);
+        assert!(recovered.path.is_dir());
+        assert_eq!(recovered.rev, current_rev(repo.path()).unwrap());
     }
 }
