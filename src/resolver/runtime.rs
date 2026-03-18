@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -170,6 +171,35 @@ struct SyncExecutionPlan {
     summary: SyncSummary,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnmanagedCollision {
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedCollision {
+    alias: String,
+    ownership_root: PathBuf,
+    collision_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedCollisionChoice {
+    Adopt,
+    RemoveMapping,
+    Cancel,
+}
+
+trait ManagedCollisionResolver {
+    fn resolve(
+        &mut self,
+        project_root: &Path,
+        collision: &ManagedCollision,
+    ) -> Result<ManagedCollisionChoice>;
+}
+
+struct TtyManagedCollisionResolver;
+
 pub fn sync_in_dir_with_adapters(
     cwd: &Path,
     cache_root: &Path,
@@ -276,10 +306,43 @@ fn sync_in_dir_with_adapters_mode(
     root_override: Option<LoadedManifest>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    let mut collision_resolver = TtyManagedCollisionResolver;
+    sync_in_dir_with_adapters_mode_and_collision_resolution(
+        cwd,
+        cache_root,
+        sync_mode,
+        allow_high_sensitivity,
+        adapters,
+        sync_on_launch,
+        execution_mode,
+        root_override,
+        if sync_mode.checks_lockfile() || !should_prompt_for_adapter() {
+            None
+        } else {
+            Some(&mut collision_resolver)
+        },
+        reporter,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_in_dir_with_adapters_mode_and_collision_resolution(
+    cwd: &Path,
+    cache_root: &Path,
+    sync_mode: SyncMode,
+    allow_high_sensitivity: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    execution_mode: ExecutionMode,
+    root_override: Option<LoadedManifest>,
+    mut collision_resolver: Option<&mut dyn ManagedCollisionResolver>,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
     crate::relay::ensure_no_pending_relay_edits_in_dir(cwd, cache_root)?;
     let has_root_override = root_override.is_some();
     let original_root = load_root_from_dir(cwd)?;
     let mut root = root_override.unwrap_or_else(|| original_root.clone());
+    let mut adopted_owned_paths = HashSet::new();
     let selection = resolve_adapter_selection(
         cwd,
         &root.manifest,
@@ -322,89 +385,148 @@ fn sync_in_dir_with_adapters_mode(
         );
     }
 
-    reporter.status("Resolving", format!("package graph in {}", cwd.display()))?;
-    let resolution = resolve_project(
-        cwd,
-        cache_root,
-        ResolveMode::Sync,
-        reporter,
-        existing_lockfile
-            .as_ref()
-            .filter(|_| sync_mode.installs_from_lockfile()),
-        Some(&root),
-    )?;
-    reporter.status("Checking", "declared capabilities")?;
-    enforce_capabilities(&resolution, allow_high_sensitivity, reporter)?;
-    reporter.status(
-        "Snapshotting",
-        format!("{} packages", resolution.packages.len()),
-    )?;
-    let stored_packages = snapshot_resolution(cache_root, &resolution)?;
+    loop {
+        reporter.status("Resolving", format!("package graph in {}", cwd.display()))?;
+        let resolution = resolve_project(
+            cwd,
+            cache_root,
+            ResolveMode::Sync,
+            reporter,
+            existing_lockfile
+                .as_ref()
+                .filter(|_| sync_mode.installs_from_lockfile()),
+            Some(&root),
+        )?;
+        reporter.status("Checking", "declared capabilities")?;
+        enforce_capabilities(&resolution, allow_high_sensitivity, reporter)?;
+        reporter.status(
+            "Snapshotting",
+            format!("{} packages", resolution.packages.len()),
+        )?;
+        let stored_packages = snapshot_resolution(cache_root, &resolution)?;
 
-    let snapshot_by_digest = stored_packages
-        .into_iter()
-        .map(|stored| (stored.digest, stored.snapshot_root))
-        .collect::<HashMap<_, _>>();
-    let package_snapshots = resolution
-        .packages
-        .iter()
-        .map(|package| {
-            let snapshot_root = snapshot_by_digest
-                .get(&package.digest)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("missing snapshot for {}", package.digest))?;
-            Ok((package.clone(), snapshot_root))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let selected_adapters = Adapters::from_slice(&selection.adapters);
-    let output_plan = build_output_plan(cwd, &package_snapshots, selected_adapters)?;
-    let planned_files = &output_plan.files;
-    let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
-    let lockfile = resolution.to_lockfile(selected_adapters)?;
-    let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
-    if existing_lockfile.is_none() {
-        owned_paths.extend(recover_runtime_owned_paths(cwd, &desired_paths));
-    }
-
-    if sync_mode.checks_lockfile() {
-        let Some(existing) = existing_lockfile.as_ref() else {
-            bail!(
-                "{} requires an existing {} in {}",
-                sync_mode.flag(),
-                LOCKFILE_NAME,
-                cwd.display()
-            );
-        };
-        if *existing != lockfile {
-            bail!("{}", checked_sync_lockfile_out_of_date_message());
-        }
-    }
-
-    validate_collisions(planned_files, &owned_paths, cwd)?;
-    let plan = build_sync_execution_plan(
-        &original_root,
-        &root,
-        &lockfile_path,
-        &lockfile,
-        &owned_paths,
-        &desired_paths,
-        planned_files,
-        resolution
-            .warnings
+        let snapshot_by_digest = stored_packages
+            .into_iter()
+            .map(|stored| (stored.digest, stored.snapshot_root))
+            .collect::<HashMap<_, _>>();
+        let package_snapshots = resolution
+            .packages
             .iter()
-            .chain(output_plan.warnings.iter())
-            .cloned()
-            .collect(),
-        SyncSummary {
-            package_count: resolution.packages.len(),
-            adapters: selection.adapters,
-            managed_file_count: planned_files.len(),
-        },
-        sync_mode,
-    )?;
-    execute_sync_plan(&plan, execution_mode, reporter)?;
+            .map(|package| {
+                let snapshot_root = snapshot_by_digest
+                    .get(&package.digest)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("missing snapshot for {}", package.digest))?;
+                Ok((package.clone(), snapshot_root))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let selected_adapters = Adapters::from_slice(&selection.adapters);
+        let output_plan = build_output_plan(cwd, &package_snapshots, selected_adapters)?;
+        let planned_files = &output_plan.files;
+        let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
+        let lockfile = resolution.to_lockfile(selected_adapters)?;
+        let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
+        if existing_lockfile.is_none() {
+            owned_paths.extend(recover_runtime_owned_paths(cwd, &desired_paths));
+        }
+        owned_paths.extend(adopted_owned_paths.iter().cloned());
 
-    Ok(plan.summary)
+        if sync_mode.checks_lockfile() {
+            let Some(existing) = existing_lockfile.as_ref() else {
+                bail!(
+                    "{} requires an existing {} in {}",
+                    sync_mode.flag(),
+                    LOCKFILE_NAME,
+                    cwd.display()
+                );
+            };
+            if *existing != lockfile {
+                bail!("{}", checked_sync_lockfile_out_of_date_message());
+            }
+        }
+
+        if let Some(unmanaged_collision) =
+            find_unmanaged_collision(planned_files, &owned_paths, cwd)
+        {
+            let Some(managed_collision) =
+                find_managed_collision(cwd, &resolution, &unmanaged_collision)
+            else {
+                bail!(
+                    "refusing to overwrite unmanaged file {}",
+                    display_path(&unmanaged_collision.path)
+                );
+            };
+            let Some(resolver) = collision_resolver.as_deref_mut() else {
+                bail!(
+                    "{}",
+                    unmanaged_collision_guidance(cwd, &managed_collision, sync_mode)
+                );
+            };
+            match resolver.resolve(cwd, &managed_collision)? {
+                ManagedCollisionChoice::Adopt => {
+                    let ownership_root = cwd.join(&managed_collision.ownership_root);
+                    reporter.note(format!(
+                        "adopting managed target {}",
+                        display_path(&ownership_root)
+                    ))?;
+                    adopted_owned_paths.insert(ownership_root);
+                    continue;
+                }
+                ManagedCollisionChoice::RemoveMapping => {
+                    if !root.manifest.remove_managed_mapping(
+                        &managed_collision.alias,
+                        &managed_collision.ownership_root,
+                    )? {
+                        bail!(
+                            "failed to remove managed mapping for dependency `{}` targeting {}",
+                            managed_collision.alias,
+                            managed_collision.ownership_root.display()
+                        );
+                    }
+                    reporter.note(format!(
+                        "removing managed mapping for dependency `{}` targeting {}",
+                        managed_collision.alias,
+                        managed_collision.ownership_root.display()
+                    ))?;
+                    root = root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
+                    continue;
+                }
+                ManagedCollisionChoice::Cancel => {
+                    bail!(
+                        "cancelled {} because managed target {} collides with existing unmanaged path {}",
+                        sync_mode.flag(),
+                        display_path(&cwd.join(&managed_collision.ownership_root)),
+                        display_path(&managed_collision.collision_path)
+                    );
+                }
+            }
+        }
+
+        let plan = build_sync_execution_plan(
+            &original_root,
+            &root,
+            &lockfile_path,
+            &lockfile,
+            &owned_paths,
+            &desired_paths,
+            planned_files,
+            resolution
+                .warnings
+                .iter()
+                .chain(output_plan.warnings.iter())
+                .cloned()
+                .collect(),
+            SyncSummary {
+                package_count: resolution.packages.len(),
+                adapters: selection.adapters,
+                managed_file_count: planned_files.len(),
+            },
+            sync_mode,
+        )?;
+        execute_sync_plan(&plan, execution_mode, reporter)?;
+
+        return Ok(plan.summary);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1460,12 +1582,26 @@ fn validate_collisions(
     owned_paths: &HashSet<PathBuf>,
     project_root: &Path,
 ) -> Result<()> {
+    if let Some(collision) = find_unmanaged_collision(planned_files, owned_paths, project_root) {
+        bail!(
+            "refusing to overwrite unmanaged file {}",
+            display_path(&collision.path)
+        );
+    }
+
+    Ok(())
+}
+
+fn find_unmanaged_collision(
+    planned_files: &[ManagedFile],
+    owned_paths: &HashSet<PathBuf>,
+    project_root: &Path,
+) -> Option<UnmanagedCollision> {
     for file in planned_files {
         if file.path.exists() && !path_is_owned(&file.path, owned_paths) {
-            bail!(
-                "refusing to overwrite unmanaged file {}",
-                display_path(&file.path)
-            );
+            return Some(UnmanagedCollision {
+                path: file.path.clone(),
+            });
         }
 
         let mut current = file.path.parent();
@@ -1474,16 +1610,118 @@ fn validate_collisions(
                 break;
             }
             if parent.exists() && parent.is_file() && !path_is_owned(parent, owned_paths) {
-                bail!(
-                    "refusing to overwrite unmanaged file {}",
-                    display_path(parent)
-                );
+                return Some(UnmanagedCollision {
+                    path: parent.to_path_buf(),
+                });
             }
             current = parent.parent();
         }
     }
 
-    Ok(())
+    None
+}
+
+fn find_managed_collision(
+    project_root: &Path,
+    resolution: &Resolution,
+    collision: &UnmanagedCollision,
+) -> Option<ManagedCollision> {
+    for package in &resolution.packages {
+        for managed_path in package.direct_managed_paths() {
+            let ownership_root = project_root.join(&managed_path.ownership_root);
+            if collision.path == ownership_root
+                || collision.path.starts_with(&ownership_root)
+                || ownership_root.starts_with(&collision.path)
+            {
+                return Some(ManagedCollision {
+                    alias: package.alias.clone(),
+                    ownership_root: managed_path.ownership_root.clone(),
+                    collision_path: collision.path.clone(),
+                });
+            }
+
+            if managed_path.files.iter().any(|file| {
+                let target = project_root.join(&file.target_relative);
+                collision.path == target || target.starts_with(&collision.path)
+            }) {
+                return Some(ManagedCollision {
+                    alias: package.alias.clone(),
+                    ownership_root: managed_path.ownership_root.clone(),
+                    collision_path: collision.path.clone(),
+                });
+            }
+        }
+    }
+
+    None
+}
+
+fn unmanaged_collision_guidance(
+    project_root: &Path,
+    collision: &ManagedCollision,
+    sync_mode: SyncMode,
+) -> String {
+    format!(
+        "refusing to overwrite unmanaged file {}. Managed target {} from dependency `{}` collides with an existing path. Rerun plain `nodus sync` on a TTY to choose whether to adopt that target, remove the managed mapping from `nodus.toml`, or cancel; {} cannot prompt interactively",
+        display_path(&collision.collision_path),
+        display_path(&project_root.join(&collision.ownership_root)),
+        collision.alias,
+        sync_mode.flag(),
+    )
+}
+
+impl ManagedCollisionResolver for TtyManagedCollisionResolver {
+    fn resolve(
+        &mut self,
+        project_root: &Path,
+        collision: &ManagedCollision,
+    ) -> Result<ManagedCollisionChoice> {
+        let stdin = io::stdin();
+        let mut stdin = stdin.lock();
+        let stderr = io::stderr();
+        let mut stderr = stderr.lock();
+        prompt_for_managed_collision(project_root, collision, &mut stdin, &mut stderr)
+    }
+}
+
+fn prompt_for_managed_collision(
+    project_root: &Path,
+    collision: &ManagedCollision,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<ManagedCollisionChoice> {
+    writeln!(
+        output,
+        "Managed target {} from dependency `{}` collides with existing unmanaged path {}.",
+        display_path(&project_root.join(&collision.ownership_root)),
+        collision.alias,
+        display_path(&collision.collision_path)
+    )?;
+    writeln!(output, "Choose how to continue:")?;
+    writeln!(
+        output,
+        "  1. adopt  (let Nodus take ownership and overwrite managed files under that target)"
+    )?;
+    writeln!(
+        output,
+        "  2. remove (delete the corresponding managed mapping from nodus.toml and continue)"
+    )?;
+    writeln!(output, "  3. cancel")?;
+    write!(output, "> ")?;
+    output.flush()?;
+
+    let mut line = String::new();
+    input.read_line(&mut line)?;
+    parse_managed_collision_choice(&line)
+}
+
+fn parse_managed_collision_choice(answer: &str) -> Result<ManagedCollisionChoice> {
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "1" | "adopt" => Ok(ManagedCollisionChoice::Adopt),
+        "2" | "remove" => Ok(ManagedCollisionChoice::RemoveMapping),
+        "3" | "cancel" => Ok(ManagedCollisionChoice::Cancel),
+        other => bail!("invalid collision resolution `{other}`"),
+    }
 }
 
 fn prune_stale_files(
@@ -1884,6 +2122,41 @@ mod tests {
             allow_high_sensitivity,
             adapters,
             false,
+            &reporter,
+        )
+    }
+
+    struct StubManagedCollisionResolver {
+        choice: ManagedCollisionChoice,
+    }
+
+    impl ManagedCollisionResolver for StubManagedCollisionResolver {
+        fn resolve(
+            &mut self,
+            _project_root: &Path,
+            _collision: &ManagedCollision,
+        ) -> Result<ManagedCollisionChoice> {
+            Ok(self.choice)
+        }
+    }
+
+    fn sync_in_dir_with_collision_choice(
+        cwd: &Path,
+        cache_root: &Path,
+        choice: ManagedCollisionChoice,
+    ) -> Result<SyncSummary> {
+        let reporter = Reporter::silent();
+        let mut resolver = StubManagedCollisionResolver { choice };
+        super::sync_in_dir_with_adapters_mode_and_collision_resolution(
+            cwd,
+            cache_root,
+            SyncMode::Normal,
+            false,
+            &Adapter::ALL,
+            false,
+            ExecutionMode::Apply,
+            None,
+            Some(&mut resolver),
             &reporter,
         )
     }
@@ -3589,6 +3862,130 @@ target = ".github/prompts/review.md"
             .unwrap_err()
             .to_string();
         assert!(error.contains("refusing to overwrite unmanaged file"));
+        assert!(error.contains(".github/prompts/review.md"));
+        assert!(error.contains("remove the managed mapping from `nodus.toml`"));
+    }
+
+    #[test]
+    fn sync_can_adopt_unmanaged_collision_on_direct_managed_target() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/prompts/review.md"),
+            "Use the review prompt.\n",
+        );
+        write_file(
+            &temp.path().join(".github/prompts/review.md"),
+            "user-owned prompt\n",
+        );
+
+        sync_in_dir_with_collision_choice(temp.path(), cache.path(), ManagedCollisionChoice::Adopt)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".github/prompts/review.md")).unwrap(),
+            "Use the review prompt.\n"
+        );
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        assert!(
+            lockfile
+                .managed_files
+                .contains(&".github/prompts/review.md".into())
+        );
+    }
+
+    #[test]
+    fn sync_can_remove_managed_mapping_after_unmanaged_collision() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/prompts/review.md"),
+            "Use the review prompt.\n",
+        );
+        write_file(
+            &temp.path().join(".github/prompts/review.md"),
+            "user-owned prompt\n",
+        );
+
+        sync_in_dir_with_collision_choice(
+            temp.path(),
+            cache.path(),
+            ManagedCollisionChoice::RemoveMapping,
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".github/prompts/review.md")).unwrap(),
+            "user-owned prompt\n"
+        );
+        let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
+        assert!(!manifest.contains("[[dependencies.shared.managed]]"));
+        let lockfile = Lockfile::read(&temp.path().join(LOCKFILE_NAME)).unwrap();
+        assert!(
+            !lockfile
+                .managed_files
+                .contains(&".github/prompts/review.md".into())
+        );
+    }
+
+    #[test]
+    fn sync_can_cancel_after_unmanaged_collision_prompt() {
+        let temp = TempDir::new().unwrap();
+        let cache = cache_dir();
+        write_manifest(
+            temp.path(),
+            r#"
+[dependencies.shared]
+path = "vendor/shared"
+
+[[dependencies.shared.managed]]
+source = "prompts/review.md"
+target = ".github/prompts/review.md"
+"#,
+        );
+        write_skill(&temp.path().join("vendor/shared/skills/review"), "Review");
+        write_file(
+            &temp.path().join("vendor/shared/prompts/review.md"),
+            "Use the review prompt.\n",
+        );
+        write_file(
+            &temp.path().join(".github/prompts/review.md"),
+            "user-owned prompt\n",
+        );
+
+        let error = sync_in_dir_with_collision_choice(
+            temp.path(),
+            cache.path(),
+            ManagedCollisionChoice::Cancel,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("cancelled `nodus sync`"));
         assert!(error.contains(".github/prompts/review.md"));
     }
 

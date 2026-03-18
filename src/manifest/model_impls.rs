@@ -219,6 +219,29 @@ impl Manifest {
             sync_on_startup: true,
         });
     }
+
+    pub fn remove_managed_mapping(&mut self, alias: &str, target_root: &Path) -> Result<bool> {
+        let Some(dependency) = self.dependencies.get_mut(alias) else {
+            return Ok(false);
+        };
+        let Some(managed) = dependency.managed.as_mut() else {
+            return Ok(false);
+        };
+
+        let before = managed.len();
+        managed.retain(|mapping| {
+            mapping
+                .normalized_target()
+                .map(|target| target != target_root)
+                .unwrap_or(true)
+        });
+        let removed = managed.len() != before;
+        if managed.is_empty() {
+            dependency.managed = None;
+        }
+
+        Ok(removed)
+    }
 }
 
 impl DependencySpec {
