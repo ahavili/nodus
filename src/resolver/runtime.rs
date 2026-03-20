@@ -1125,6 +1125,14 @@ fn locked_git_source<'a>(
                 && source.tag.is_none()
                 && source.branch.is_none()
         }
+        RequestedGitRef::VersionReq(requirement) => {
+            source
+                .tag
+                .as_deref()
+                .and_then(crate::git::parse_semver_tag)
+                .is_some_and(|version| requirement.matches(&version))
+                && source.branch.is_none()
+        }
     };
 
     let mut matching_sources = lockfile
@@ -2213,6 +2221,7 @@ mod tests {
             url,
             AddDependencyOptions {
                 git_ref: tag.map(RequestedGitRef::Tag),
+                version_req: None,
                 kind: DependencyKind::Dependency,
                 adapters,
                 components,
@@ -2237,6 +2246,7 @@ mod tests {
             url,
             AddDependencyOptions {
                 git_ref: Some(git_ref),
+                version_req: None,
                 kind: DependencyKind::Dependency,
                 adapters,
                 components,
@@ -2809,14 +2819,7 @@ leaf = {{ url = "{}", tag = "v0.1.0" }}
         let dependency = manifest.manifest.dependencies.values().next().unwrap();
         assert_eq!(dependency.tag, None);
         assert_eq!(dependency.branch.as_deref(), Some("main"));
-        assert_eq!(
-            dependency
-                .version
-                .as_ref()
-                .map(ToString::to_string)
-                .as_deref(),
-            Some("2.34.0")
-        );
+        assert!(dependency.version.is_none());
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub struct PackageInfo {
     alias: String,
     name: String,
     version: Option<String>,
+    version_requirement: Option<String>,
     description: Option<String>,
     license: Option<String>,
     rust_version: Option<String>,
@@ -178,6 +179,7 @@ fn load_package_info(
                 tag: None,
             },
             None,
+            None,
             role,
         ));
     }
@@ -208,6 +210,7 @@ fn load_package_info(
             branch: checkout.branch,
             rev: checkout.rev,
         },
+        None,
         None,
         role,
     ))
@@ -279,34 +282,19 @@ fn load_from_dependency_spec(
                     tag: dependency.tag.clone(),
                 },
                 dependency.effective_selected_components(),
+                None,
                 PackageRole::Dependency,
             ))
         }
         DependencySourceKind::Git => {
             let url = dependency.resolved_git_url()?;
-            let checkout = match dependency.requested_git_ref()? {
-                crate::manifest::RequestedGitRef::Tag(tag) => ensure_git_dependency(
-                    cache_root,
-                    &url,
-                    Some(crate::manifest::RequestedGitRef::Tag(tag)),
-                    true,
-                    reporter,
-                )?,
-                crate::manifest::RequestedGitRef::Branch(branch) => ensure_git_dependency(
-                    cache_root,
-                    &url,
-                    Some(crate::manifest::RequestedGitRef::Branch(branch)),
-                    true,
-                    reporter,
-                )?,
-                crate::manifest::RequestedGitRef::Revision(revision) => ensure_git_dependency(
-                    cache_root,
-                    &url,
-                    Some(crate::manifest::RequestedGitRef::Revision(revision)),
-                    true,
-                    reporter,
-                )?,
-            };
+            let checkout = ensure_git_dependency(
+                cache_root,
+                &url,
+                Some(dependency.requested_git_ref()?),
+                true,
+                reporter,
+            )?;
             let manifest = load_dependency_from_dir(&checkout.path).with_context(|| {
                 format!("dependency `{alias}` does not match the Nodus package layout")
             })?;
@@ -320,6 +308,7 @@ fn load_from_dependency_spec(
                     rev: checkout.rev,
                 },
                 dependency.effective_selected_components(),
+                dependency.version.as_ref().map(ToString::to_string),
                 PackageRole::Dependency,
             ))
         }
@@ -340,6 +329,7 @@ fn package_info_from_loaded(
     manifest: LoadedManifest,
     source: PackageInfoSource,
     selected_components: Option<Vec<DependencyComponent>>,
+    version_requirement: Option<String>,
     role: PackageRole,
 ) -> PackageInfo {
     let mut warnings = manifest.warnings.clone();
@@ -382,6 +372,7 @@ fn package_info_from_loaded(
             .effective_version()
             .map(|version| version.to_string())
             .or_else(|| cargo_metadata.version.clone()),
+        version_requirement,
         description: cargo_metadata.description,
         license: cargo_metadata.license,
         rust_version: cargo_metadata.rust_version,
@@ -482,6 +473,12 @@ impl PackageInfo {
         }
 
         self.push_optional_field(&mut lines, reporter, "version", self.version.as_deref());
+        self.push_optional_field(
+            &mut lines,
+            reporter,
+            "version-requirement",
+            self.version_requirement.as_deref(),
+        );
         self.push_optional_field(&mut lines, reporter, "license", self.license.as_deref());
         self.push_optional_field(
             &mut lines,

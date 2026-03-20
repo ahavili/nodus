@@ -50,6 +50,7 @@ pub(super) fn run_command_in_dir(
             dev,
             tag,
             branch,
+            version,
             revision,
             adapter,
             component,
@@ -67,6 +68,10 @@ pub(super) fn run_command_in_dir(
                             branch.as_deref(),
                             revision.as_deref(),
                         )?,
+                        version_req: version
+                            .as_deref()
+                            .map(semver::VersionReq::parse)
+                            .transpose()?,
                         kind: if dev {
                             DependencyKind::DevDependency
                         } else {
@@ -89,6 +94,10 @@ pub(super) fn run_command_in_dir(
                             branch.as_deref(),
                             revision.as_deref(),
                         )?,
+                        version_req: version
+                            .as_deref()
+                            .map(semver::VersionReq::parse)
+                            .transpose()?,
                         kind: if dev {
                             DependencyKind::DevDependency
                         } else {

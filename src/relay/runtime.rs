@@ -1291,6 +1291,7 @@ mod tests {
             &remote.to_string_lossy(),
             AddDependencyOptions {
                 git_ref: Some(crate::manifest::RequestedGitRef::Tag("v0.1.0")),
+                version_req: None,
                 kind: crate::manifest::DependencyKind::Dependency,
                 adapters,
                 components: &[],
@@ -2066,6 +2067,7 @@ tag = {:?}
             &remote_repo_two.to_string_lossy(),
             AddDependencyOptions {
                 git_ref: Some(crate::manifest::RequestedGitRef::Tag("v0.2.0")),
+                version_req: None,
                 kind: crate::manifest::DependencyKind::Dependency,
                 adapters: &[Adapter::Claude],
                 components: &[],

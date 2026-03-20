@@ -114,9 +114,7 @@ pub(super) fn load_claude_marketplace_wrapper(
                 tag: None,
                 branch: None,
                 revision: None,
-                version: declared_version
-                    .clone()
-                    .or_else(|| plugin_manifest.effective_version()),
+                version: None,
                 components: None,
                 managed: None,
             },

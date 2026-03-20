@@ -5,7 +5,10 @@ use anyhow::{Context, Result};
 use rayon::prelude::*;
 use serde::Serialize;
 
-use crate::git::{ensure_git_dependency, latest_tag, prepare_repository_mirror};
+use crate::git::{
+    ensure_git_dependency, latest_compatible_tag, latest_tag, parse_semver_tag,
+    prepare_repository_mirror,
+};
 use crate::lockfile::Lockfile;
 use crate::manifest::{
     DependencyKind, DependencySourceKind, DependencySpec, RequestedGitRef, load_root_from_dir,
@@ -55,6 +58,28 @@ enum DependencyStatus {
     GitRevisionCurrent {
         rev: String,
     },
+    GitSemverCurrent {
+        requirement: String,
+        current: String,
+        latest: String,
+    },
+    GitSemverCompatibleUpdate {
+        requirement: String,
+        current: String,
+        latest_compatible: String,
+        latest: String,
+    },
+    GitSemverMajorUpdateAvailable {
+        requirement: String,
+        current: String,
+        latest_compatible: String,
+        latest: String,
+    },
+    GitSemverUnlocked {
+        requirement: String,
+        latest_compatible: String,
+        latest: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,13 +114,22 @@ enum DependencyProbe {
     GitRevision {
         rev: String,
     },
+    GitSemver {
+        requirement: String,
+        locked_tag: Option<String>,
+        latest_compatible: String,
+        latest: String,
+    },
 }
 
 impl DependencyReport {
     fn is_outdated(&self) -> bool {
         matches!(
             self.status,
-            DependencyStatus::GitTagOutdated { .. } | DependencyStatus::GitBranchOutdated { .. }
+            DependencyStatus::GitTagOutdated { .. }
+                | DependencyStatus::GitBranchOutdated { .. }
+                | DependencyStatus::GitSemverCompatibleUpdate { .. }
+                | DependencyStatus::GitSemverMajorUpdateAvailable { .. }
         )
     }
 
@@ -125,6 +159,34 @@ impl DependencyReport {
             DependencyStatus::GitRevisionCurrent { rev } => {
                 format!("pinned to revision {}", short_rev(rev))
             }
+            DependencyStatus::GitSemverCurrent {
+                requirement,
+                current,
+                latest,
+            } => format!("current at tag {current} for {requirement} (latest overall {latest})"),
+            DependencyStatus::GitSemverCompatibleUpdate {
+                requirement,
+                current,
+                latest_compatible,
+                latest,
+            } => format!(
+                "compatible update for {requirement}: {current} -> {latest_compatible} (latest overall {latest})"
+            ),
+            DependencyStatus::GitSemverMajorUpdateAvailable {
+                requirement,
+                current,
+                latest_compatible,
+                latest,
+            } => format!(
+                "major update available for {requirement}: current {current}, latest compatible {latest_compatible}, latest overall {latest}"
+            ),
+            DependencyStatus::GitSemverUnlocked {
+                requirement,
+                latest_compatible,
+                latest,
+            } => format!(
+                "version {requirement} resolves to {latest_compatible} (latest overall {latest}; not locked locally)"
+            ),
         };
         format!("{:<20} {}", display_alias(&self.alias, self.kind), status)
     }
@@ -279,6 +341,19 @@ fn probe_dependencies(
                     RequestedGitRef::Revision(rev) => DependencyProbe::GitRevision {
                         rev: rev.to_string(),
                     },
+                    RequestedGitRef::VersionReq(requirement) => {
+                        let latest_compatible = latest_compatible_tag(&mirror_path, requirement)?;
+                        let latest = latest_tag(&mirror_path)
+                            .ok()
+                            .filter(|tag| parse_semver_tag(tag).is_some())
+                            .unwrap_or_else(|| latest_compatible.clone());
+                        DependencyProbe::GitSemver {
+                            requirement: requirement.to_string(),
+                            locked_tag: locked_tag(lockfile, &dependency.alias),
+                            latest_compatible,
+                            latest,
+                        }
+                    }
                 };
                 group_probes.push((dependency.alias.clone(), probe));
             }
@@ -342,6 +417,39 @@ fn report_for_dependency(
         DependencyProbe::GitRevision { rev } => {
             DependencyStatus::GitRevisionCurrent { rev: rev.clone() }
         }
+        DependencyProbe::GitSemver {
+            requirement,
+            locked_tag,
+            latest_compatible,
+            latest,
+        } => match locked_tag {
+            Some(current) if current == latest_compatible && current == latest => {
+                DependencyStatus::GitSemverCurrent {
+                    requirement: requirement.clone(),
+                    current: current.clone(),
+                    latest: latest.clone(),
+                }
+            }
+            Some(current) if current == latest_compatible => {
+                DependencyStatus::GitSemverMajorUpdateAvailable {
+                    requirement: requirement.clone(),
+                    current: current.clone(),
+                    latest_compatible: latest_compatible.clone(),
+                    latest: latest.clone(),
+                }
+            }
+            Some(current) => DependencyStatus::GitSemverCompatibleUpdate {
+                requirement: requirement.clone(),
+                current: current.clone(),
+                latest_compatible: latest_compatible.clone(),
+                latest: latest.clone(),
+            },
+            None => DependencyStatus::GitSemverUnlocked {
+                requirement: requirement.clone(),
+                latest_compatible: latest_compatible.clone(),
+                latest: latest.clone(),
+            },
+        },
     };
 
     Ok(DependencyReport {
@@ -374,6 +482,14 @@ fn locked_rev(lockfile: Option<&Lockfile>, alias: &str) -> Option<String> {
         .iter()
         .find(|package| package.alias == alias)
         .and_then(|package| package.source.rev.clone())
+}
+
+fn locked_tag(lockfile: Option<&Lockfile>, alias: &str) -> Option<String> {
+    lockfile?
+        .packages
+        .iter()
+        .find(|package| package.alias == alias)
+        .and_then(|package| package.source.tag.clone())
 }
 
 fn short_rev(rev: &str) -> String {
@@ -475,6 +591,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                version_req: None,
                 kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
@@ -508,6 +625,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                version_req: None,
                 kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
@@ -542,6 +660,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: None,
+                version_req: None,
                 kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
@@ -578,6 +697,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Revision(revision.as_str())),
+                version_req: None,
                 kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
@@ -599,6 +719,43 @@ mod tests {
     }
 
     #[test]
+    fn reports_semver_compatible_updates_and_major_availability() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        let repo = TempDir::new().unwrap();
+        write_skill(&repo.path().join("skills/review"), "Review");
+        init_git_repo(repo.path());
+        run_git(repo.path(), &["tag", "v1.0.0"]);
+
+        let (reporter, _) = make_reporter();
+        add_dependency_in_dir_with_adapters(
+            project.path(),
+            cache.path(),
+            &repo.path().to_string_lossy(),
+            crate::git::AddDependencyOptions {
+                git_ref: None,
+                version_req: Some(semver::VersionReq::parse("^1.0.0").unwrap()),
+                kind: DependencyKind::Dependency,
+                adapters: &[Adapter::Codex],
+                components: &[],
+                sync_on_launch: false,
+            },
+            &reporter,
+        )
+        .unwrap();
+
+        run_git(repo.path(), &["tag", "v1.2.0"]);
+        run_git(repo.path(), &["tag", "v2.0.0"]);
+
+        let (reporter, output) = make_reporter();
+        let summary = check_outdated_in_dir(project.path(), cache.path(), &reporter).unwrap();
+
+        assert_eq!(summary.outdated_count, 1);
+        assert!(output.contents().contains("compatible update for ^1.0.0"));
+        assert!(output.contents().contains("latest overall v2.0.0"));
+    }
+
+    #[test]
     fn json_reports_include_dev_dependency_kind() {
         let project = TempDir::new().unwrap();
         let cache = TempDir::new().unwrap();
@@ -614,6 +771,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                version_req: None,
                 kind: DependencyKind::DevDependency,
                 adapters: &[Adapter::Codex],
                 components: &[],

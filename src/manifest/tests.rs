@@ -216,14 +216,7 @@ fn accepts_dependency_repo_with_claude_marketplace_wrapper() {
         Some(Path::new("./.claude-plugin/plugins/axiom"))
     );
     assert_eq!(dependency.tag, None);
-    assert_eq!(
-        dependency
-            .version
-            .as_ref()
-            .map(ToString::to_string)
-            .as_deref(),
-        Some("2.34.0")
-    );
+    assert!(dependency.version.is_none());
     assert_eq!(
         loaded.manifest.version,
         Some(Version::parse("2.34.0").unwrap())
@@ -776,7 +769,7 @@ fn serializes_dependencies_as_inline_tables() {
             tag: Some("v0.1.0".into()),
             branch: None,
             revision: None,
-            version: Some(Version::parse("0.1.0").unwrap()),
+            version: Some(semver::VersionReq::parse("^0.1.0").unwrap()),
             components: Some(vec![
                 DependencyComponent::Rules,
                 DependencyComponent::Skills,
@@ -790,7 +783,7 @@ fn serializes_dependencies_as_inline_tables() {
     assert!(encoded.contains("[dependencies]"));
     assert!(encoded.contains("playbook_ios = {"));
     assert!(encoded.contains("github = \"wenext-limited/playbook-ios\""));
-    assert!(encoded.contains("version = \"0.1.0\""));
+    assert!(encoded.contains("version = \"^0.1.0\""));
     assert!(encoded.contains("components = [\"skills\", \"rules\"]"));
     assert!(!encoded.contains("url = "));
 }
@@ -1052,6 +1045,39 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", compone
         dependency.explicit_components_sorted().unwrap(),
         vec![DependencyComponent::Skills, DependencyComponent::Agents]
     );
+}
+
+#[test]
+fn rejects_git_dependency_version_with_tag() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0", version = "^1.0.0" }
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("must not declare both `version` and `tag`"));
+}
+
+#[test]
+fn accepts_git_dependency_version_requirement_without_explicit_ref() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[dependencies]
+playbook_ios = { github = "wenext-limited/playbook-ios", version = "^1.0.0" }
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+    let dependency = loaded.manifest.dependencies.get("playbook_ios").unwrap();
+    assert_eq!(dependency.version.as_ref().unwrap().to_string(), "^1.0.0");
 }
 
 #[test]

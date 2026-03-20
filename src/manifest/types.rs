@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use clap::ValueEnum;
-use semver::Version;
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::Adapter;
@@ -79,7 +79,7 @@ pub struct DependencySpec {
     #[serde(default, alias = "rev", skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<Version>,
+    pub version: Option<VersionReq>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<Vec<DependencyComponent>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

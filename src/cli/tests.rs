@@ -165,6 +165,20 @@ fn parses_info_subcommand() {
 }
 
 #[test]
+fn parses_add_version_selector() {
+    let cli =
+        Cli::try_parse_from(["nodus", "add", "obra/superpowers", "--version", "^1.2.0"]).unwrap();
+
+    match cli.command {
+        Command::Add { url, version, .. } => {
+            assert_eq!(url, "obra/superpowers");
+            assert_eq!(version.as_deref(), Some("^1.2.0"));
+        }
+        other => panic!("expected add command, got {other:?}"),
+    }
+}
+
+#[test]
 fn parses_json_flags_for_read_only_commands() {
     let info = Cli::try_parse_from(["nodus", "info", ".", "--json"]).unwrap();
     let outdated = Cli::try_parse_from(["nodus", "outdated", "--json"]).unwrap();
@@ -457,6 +471,7 @@ fn list_command_emits_json_with_locked_metadata() {
             dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
@@ -513,6 +528,50 @@ tooling = { path = "vendor/tooling" }
     let json: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(json["dependencies"][0]["alias"], "tooling");
     assert_eq!(json["dependencies"][0]["kind"], "dev_dependency");
+}
+
+#[test]
+fn list_command_emits_version_requested_ref_for_semver_dependencies() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    write_skill(&repo.path().join("skills/review"), "Review");
+    init_git_repo(repo.path());
+    let output = ProcessCommand::new("git")
+        .args(["tag", "v1.0.0"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    run_command_in_dir(
+        Command::Add {
+            url: repo.path().to_string_lossy().to_string(),
+            dev: false,
+            tag: None,
+            branch: None,
+            version: Some("^1.0.0".into()),
+            revision: None,
+            adapter: vec![Adapter::Codex],
+            component: vec![],
+            sync_on_launch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let output = run_command_output(Command::List { json: true }, temp.path(), cache.path());
+    let json: Value = serde_json::from_str(&output).unwrap();
+
+    assert_eq!(json["dependencies"][0]["requested_ref"]["kind"], "version");
+    assert_eq!(json["dependencies"][0]["requested_ref"]["value"], "^1.0.0");
 }
 
 #[test]
@@ -763,6 +822,7 @@ fn add_command_emits_resolving_and_adding_lines() {
             dev: false,
             tag: None,
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
@@ -780,6 +840,66 @@ fn add_command_emits_resolving_and_adding_lines() {
 }
 
 #[test]
+fn info_command_renders_version_requirement_for_semver_dependencies() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let repo = TempDir::new().unwrap();
+    write_skill(&repo.path().join("skills/review"), "Review");
+    init_git_repo(repo.path());
+    let output = ProcessCommand::new("git")
+        .args(["tag", "v1.0.0"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    run_command_in_dir(
+        Command::Add {
+            url: repo.path().to_string_lossy().to_string(),
+            dev: false,
+            tag: None,
+            branch: None,
+            version: Some("^1.0.0".into()),
+            revision: None,
+            adapter: vec![Adapter::Claude],
+            component: vec![],
+            sync_on_launch: false,
+            dry_run: false,
+        },
+        temp.path(),
+        cache.path(),
+        &Reporter::silent(),
+    )
+    .unwrap();
+
+    let alias = crate::manifest::load_root_from_dir(temp.path())
+        .unwrap()
+        .manifest
+        .dependencies
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    let output = run_command_output(
+        Command::Info {
+            package: alias,
+            tag: None,
+            branch: None,
+            json: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(output.contains("version-requirement: ^1.0.0"));
+    assert!(output.contains("source:"));
+}
+
+#[test]
 fn add_dry_run_previews_without_writing_project_files() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
@@ -791,6 +911,7 @@ fn add_dry_run_previews_without_writing_project_files() {
             dev: false,
             tag: None,
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
@@ -932,6 +1053,7 @@ fn outdated_command_emits_json_without_status_lines() {
             dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
@@ -975,6 +1097,7 @@ fn update_command_emits_updating_and_finished_lines() {
             dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
@@ -1013,6 +1136,7 @@ fn remove_dry_run_keeps_manifest_and_lockfile_unchanged() {
             dev: false,
             tag: None,
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
@@ -1068,6 +1192,7 @@ fn update_dry_run_keeps_manifest_and_lockfile_unchanged() {
             dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Codex],
             component: vec![],
@@ -1126,6 +1251,7 @@ fn sync_dry_run_locked_and_frozen_leave_state_unchanged() {
             dev: false,
             tag: None,
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
@@ -1201,6 +1327,7 @@ fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
             dev: false,
             tag: None,
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
@@ -1326,6 +1453,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             dev: false,
             tag: None,
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
@@ -1351,6 +1479,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             dev: false,
             tag: Some("v0.2.0".into()),
             branch: None,
+            version: None,
             revision: None,
             adapter: vec![Adapter::Claude],
             component: vec![],
