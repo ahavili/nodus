@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
+use semver::{Version, VersionReq};
 use sha2::{Digest, Sha256};
 
 use crate::adapters::Adapter;
@@ -41,9 +42,10 @@ pub struct RemoveSummary {
     pub managed_file_count: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AddDependencyOptions<'a> {
     pub git_ref: Option<RequestedGitRef<'a>>,
+    pub version_req: Option<VersionReq>,
     pub kind: DependencyKind,
     pub adapters: &'a [Adapter],
     pub components: &'a [DependencyComponent],
@@ -106,7 +108,7 @@ fn add_dependency_in_dir_with_adapters_mode(
     let checkout =
         ensure_git_dependency(cache_root, &normalized_url, options.git_ref, true, reporter)?;
     let github = github_slug_from_url(&checkout.url);
-    let dependency_manifest = load_dependency_from_dir(&checkout.path)
+    load_dependency_from_dir(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
 
     let mut root = load_from_dir(project_root, PackageRole::Root)?;
@@ -136,10 +138,7 @@ fn add_dependency_in_dir_with_adapters_mode(
                 RequestedGitRef::Revision(_) => Some(checkout.rev.clone()),
                 _ => None,
             }),
-            version: checkout
-                .branch
-                .as_ref()
-                .and(dependency_manifest.effective_version()),
+            version: options.version_req.clone(),
             components: (!options.components.is_empty()).then(|| {
                 let mut sorted = options.components.to_vec();
                 sorted.sort();
@@ -281,6 +280,15 @@ pub fn ensure_git_dependency(
             RequestedGitRef::Revision(value) => {
                 (None, None, resolve_ref_to_rev(&mirror_path, value)?)
             }
+            RequestedGitRef::VersionReq(value) => {
+                reporter.status(
+                    "Resolving",
+                    format!("latest compatible tag for {normalized_url} ({value})"),
+                )?;
+                let tag = latest_compatible_tag(&mirror_path, value)?;
+                let rev = resolve_ref_to_rev(&mirror_path, &tag)?;
+                (Some(tag), None, rev)
+            }
         }
     } else {
         reporter.status("Resolving", format!("latest tag for {normalized_url}"))?;
@@ -391,6 +399,15 @@ pub fn latest_tag(path: &Path) -> Result<String> {
     latest_tag_name(path)?.ok_or_else(|| anyhow!("no git tags found in {}", path.display()))
 }
 
+pub fn latest_compatible_tag(path: &Path, requirement: &VersionReq) -> Result<String> {
+    latest_compatible_tag_name(path, requirement)?.ok_or_else(|| {
+        anyhow!(
+            "no git tags in {} satisfy version requirement `{requirement}`",
+            path.display()
+        )
+    })
+}
+
 fn latest_tag_name(path: &Path) -> Result<Option<String>> {
     let tags = git_output(
         path,
@@ -405,6 +422,33 @@ fn latest_tag_name(path: &Path) -> Result<Option<String>> {
         .lines()
         .find(|line| !line.trim().is_empty())
         .map(|line| line.trim().to_string()))
+}
+
+fn latest_compatible_tag_name(path: &Path, requirement: &VersionReq) -> Result<Option<String>> {
+    let tags = git_output(
+        path,
+        [
+            "for-each-ref",
+            "--sort=-v:refname",
+            "--format=%(refname:strip=2)",
+            "refs/tags",
+        ],
+    )?;
+    Ok(tags.lines().find_map(|line| {
+        let tag = line.trim();
+        if tag.is_empty() {
+            return None;
+        }
+        parse_semver_tag(tag)
+            .filter(|version| requirement.matches(version))
+            .map(|_| tag.to_string())
+    }))
+}
+
+pub fn parse_semver_tag(tag: &str) -> Option<Version> {
+    Version::parse(tag)
+        .ok()
+        .or_else(|| tag.strip_prefix('v').and_then(|value| Version::parse(value).ok()))
 }
 
 pub fn default_branch(path: &Path) -> Result<String> {
@@ -1054,6 +1098,31 @@ mod tests {
         }
 
         assert_eq!(latest_tag(temp.path()).unwrap(), "v1.2.0");
+    }
+
+    #[test]
+    fn picks_latest_compatible_semver_tag() {
+        let temp = TempDir::new().unwrap();
+        write_file(&temp.path().join("README.md"), "hello\n");
+        init_git_repo(temp.path());
+
+        for tag in ["v0.9.0", "v1.2.0", "v1.4.0", "v2.0.0"] {
+            let output = Command::new("git")
+                .args(["tag", tag])
+                .current_dir(temp.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        assert_eq!(
+            latest_compatible_tag(temp.path(), &VersionReq::parse("^1.0.0").unwrap()).unwrap(),
+            "v1.4.0"
+        );
     }
 
     #[test]

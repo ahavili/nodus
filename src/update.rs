@@ -3,14 +3,13 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use rayon::prelude::*;
-use semver::Version;
 
 use crate::execution::ExecutionMode;
-use crate::git::{ensure_git_dependency, latest_tag, prepare_repository_mirror};
+use crate::git::{ensure_git_dependency, latest_compatible_tag, latest_tag, prepare_repository_mirror};
 use crate::lockfile::Lockfile;
 use crate::manifest::{
     DependencyKind, DependencySourceKind, DependencySpec, PackageRole, RequestedGitRef,
-    load_dependency_from_dir, load_root_from_dir,
+    load_root_from_dir,
 };
 use crate::report::Reporter;
 use crate::resolver::sync_in_dir_with_loaded_root;
@@ -38,7 +37,11 @@ enum DependencyUpdatePlan {
         branch: String,
         locked_rev: Option<String>,
         latest_rev: String,
-        latest_version: Option<Version>,
+    },
+    GitSemver {
+        requirement: String,
+        locked_tag: Option<String>,
+        latest_tag: String,
     },
     GitRevision,
 }
@@ -104,7 +107,6 @@ fn update_direct_dependencies_in_dir_mode(
         .collect::<Vec<_>>();
     let plans = plan_dependency_updates(&dependencies, existing_lockfile.as_ref(), cache_root)?;
     let mut updated_count = 0;
-    let mut manifest_changed = false;
 
     for kind in [DependencyKind::Dependency, DependencyKind::DevDependency] {
         for (alias, dependency) in root.manifest.dependency_section_mut(kind) {
@@ -124,14 +126,12 @@ fn update_direct_dependencies_in_dir_mode(
                         ))?;
                         dependency.tag = Some(latest_tag.clone());
                         updated_count += 1;
-                        manifest_changed = true;
                     }
                 }
                 DependencyUpdatePlan::GitBranch {
                     branch,
                     locked_rev,
                     latest_rev,
-                    latest_version,
                 } => {
                     if locked_rev.as_deref() != Some(latest_rev.as_str()) {
                         let previous = locked_rev
@@ -145,9 +145,19 @@ fn update_direct_dependencies_in_dir_mode(
                         ))?;
                         updated_count += 1;
                     }
-                    if &dependency.version != latest_version {
-                        dependency.version = latest_version.clone();
-                        manifest_changed = true;
+                }
+                DependencyUpdatePlan::GitSemver {
+                    requirement,
+                    locked_tag,
+                    latest_tag,
+                } => {
+                    if locked_tag.as_deref() != Some(latest_tag.as_str()) {
+                        let previous = locked_tag.as_deref().unwrap_or("none");
+                        reporter.note(format!(
+                            "updating {} version {requirement} {previous} -> {latest_tag}",
+                            display_alias(alias, kind),
+                        ))?;
+                        updated_count += 1;
                     }
                 }
                 DependencyUpdatePlan::GitRevision => {}
@@ -155,32 +165,18 @@ fn update_direct_dependencies_in_dir_mode(
         }
     }
 
-    let sync_summary = if manifest_changed {
-        let root = root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
-        sync_in_dir_with_loaded_root(
-            cwd,
-            cache_root,
-            false,
-            allow_high_sensitivity,
-            &[],
-            false,
-            execution_mode,
-            root,
-            reporter,
-        )?
-    } else {
-        sync_in_dir_with_loaded_root(
-            cwd,
-            cache_root,
-            false,
-            allow_high_sensitivity,
-            &[],
-            false,
-            execution_mode,
-            root,
-            reporter,
-        )?
-    };
+    let root = root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
+    let sync_summary = sync_in_dir_with_loaded_root(
+        cwd,
+        cache_root,
+        false,
+        allow_high_sensitivity,
+        &[],
+        false,
+        execution_mode,
+        root,
+        reporter,
+    )?;
     if updated_count == 0 && sync_summary.package_count == 0 {
         bail!("project contains no packages to sync");
     }
@@ -216,7 +212,8 @@ fn plan_dependency_updates(
         .map(|(url, dependencies)| {
             let reporter = Reporter::silent();
             let mut latest_tag_name = None;
-            let mut branch_updates = BTreeMap::<String, (String, Option<Version>)>::new();
+            let mut branch_updates = BTreeMap::<String, String>::new();
+            let mut compatible_tag_updates = BTreeMap::<String, String>::new();
             let mut group_plans = Vec::with_capacity(dependencies.len());
 
             for dependency in dependencies {
@@ -238,8 +235,8 @@ fn plan_dependency_updates(
                         }
                     }
                     RequestedGitRef::Branch(branch) => {
-                        let (latest_rev, latest_version) = match branch_updates.get(branch) {
-                            Some((rev, version)) => (rev.clone(), version.clone()),
+                        let latest_rev = match branch_updates.get(branch) {
+                            Some(rev) => rev.clone(),
                             None => {
                                 let checkout = ensure_git_dependency(
                                     cache_root,
@@ -248,21 +245,32 @@ fn plan_dependency_updates(
                                     true,
                                     &reporter,
                                 )?;
-                                let version = load_dependency_from_dir(&checkout.path)?
-                                    .effective_version()
-                                    .or_else(|| dependency.spec.version.clone());
-                                branch_updates.insert(
-                                    branch.to_string(),
-                                    (checkout.rev.clone(), version.clone()),
-                                );
-                                (checkout.rev, version)
+                                branch_updates.insert(branch.to_string(), checkout.rev.clone());
+                                checkout.rev
                             }
                         };
                         DependencyUpdatePlan::GitBranch {
                             branch: branch.to_string(),
                             locked_rev: locked_rev(existing_lockfile, &dependency.alias),
                             latest_rev,
-                            latest_version,
+                        }
+                    }
+                    RequestedGitRef::VersionReq(requirement) => {
+                        let latest_tag = match compatible_tag_updates.get(&requirement.to_string()) {
+                            Some(tag) => tag.clone(),
+                            None => {
+                                let mirror =
+                                    prepare_repository_mirror(cache_root, &url, true, &reporter)?;
+                                let tag = latest_compatible_tag(&mirror, requirement)?;
+                                compatible_tag_updates
+                                    .insert(requirement.to_string(), tag.clone());
+                                tag
+                            }
+                        };
+                        DependencyUpdatePlan::GitSemver {
+                            requirement: requirement.to_string(),
+                            locked_tag: locked_tag(existing_lockfile, &dependency.alias),
+                            latest_tag,
                         }
                     }
                     RequestedGitRef::Revision(_) => DependencyUpdatePlan::GitRevision,
@@ -302,6 +310,14 @@ fn locked_rev(lockfile: Option<&Lockfile>, alias: &str) -> Option<String> {
         .and_then(|package| package.source.rev.clone())
 }
 
+fn locked_tag(lockfile: Option<&Lockfile>, alias: &str) -> Option<String> {
+    lockfile?
+        .packages
+        .iter()
+        .find(|package| package.alias == alias)
+        .and_then(|package| package.source.tag.clone())
+}
+
 fn short_rev(rev: &str) -> String {
     rev.chars().take(12).collect()
 }
@@ -320,7 +336,6 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    use semver::Version;
     use tempfile::TempDir;
 
     use super::*;
@@ -382,6 +397,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                version_req: None,
                 kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
@@ -432,6 +448,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: None,
+                version_req: None,
                 kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
@@ -466,10 +483,7 @@ mod tests {
 
         assert_eq!(summary.updated_count, 1);
         assert_eq!(dependency.branch.as_deref(), Some("main"));
-        assert_eq!(
-            dependency.version.as_ref(),
-            Some(&Version::parse("1.1.0").unwrap())
-        );
+        assert!(dependency.version.is_none());
         assert_eq!(
             locked.source.rev.as_deref(),
             Some(current_rev(repo.path()).unwrap().as_str())
@@ -491,6 +505,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Revision(revision.as_str())),
+                version_req: None,
                 kind: DependencyKind::Dependency,
                 adapters: &[Adapter::Codex],
                 components: &[],
@@ -542,6 +557,7 @@ mod tests {
             &repo.path().to_string_lossy(),
             crate::git::AddDependencyOptions {
                 git_ref: Some(RequestedGitRef::Tag("v0.1.0")),
+                version_req: None,
                 kind: DependencyKind::DevDependency,
                 adapters: &[Adapter::Codex],
                 components: &[],

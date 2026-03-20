@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use semver::Version;
+use semver::{Version, VersionReq};
 
 use super::discover::{
     canonicalize_existing_path, collect_files, default_package_name,
@@ -339,9 +339,11 @@ fn validate_dependency_entry(package: &LoadedManifest, entry: DependencyEntry<'_
                 + usize::from(!revision.is_empty());
             match requested_ref_count {
                 0 => {
-                    bail!(
-                        "{label} `{alias}` must declare `tag`, `branch`, or `revision` for git sources"
-                    )
+                    if dependency.version.is_none() {
+                        bail!(
+                            "{label} `{alias}` must declare `tag`, `branch`, `revision`, or `version` for git sources"
+                        )
+                    }
                 }
                 1 => {}
                 _ => {
@@ -350,11 +352,23 @@ fn validate_dependency_entry(package: &LoadedManifest, entry: DependencyEntry<'_
                     )
                 }
             }
+            if dependency.version.is_some() && !tag.is_empty() {
+                bail!("{label} `{alias}` must not declare both `version` and `tag`");
+            }
+            if dependency.version.is_some() && !branch.is_empty() {
+                bail!("{label} `{alias}` must not declare both `version` and `branch`");
+            }
+            if dependency.version.is_some() && !revision.is_empty() {
+                bail!("{label} `{alias}` must not declare both `version` and `revision`");
+            }
         }
         DependencySourceKind::Path => {
             let Some(path) = &dependency.path else {
                 bail!("{label} `{alias}` must declare `path`");
             };
+            if dependency.version.is_some() {
+                bail!("{label} `{alias}` must not declare `version` for path sources");
+            }
             let dependency_root = package.resolve_existing_path(path)?;
             if !dependency_root.is_dir() {
                 bail!(
@@ -495,9 +509,15 @@ impl DependencySpec {
             (Some(tag), None, None) => Ok(RequestedGitRef::Tag(tag)),
             (None, Some(branch), None) => Ok(RequestedGitRef::Branch(branch)),
             (None, None, Some(revision)) => Ok(RequestedGitRef::Revision(revision)),
-            (None, None, None) => {
-                bail!("git dependency must declare `tag`, `branch`, or `revision`")
-            }
+            (None, None, None) => self
+                .version
+                .as_ref()
+                .map(RequestedGitRef::VersionReq)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "git dependency must declare `tag`, `branch`, `revision`, or `version`"
+                    )
+                }),
             _ => bail!(
                 "git dependency must not declare more than one of `tag`, `branch`, or `revision`"
             ),
@@ -524,6 +544,7 @@ pub enum RequestedGitRef<'a> {
     Tag(&'a str),
     Branch(&'a str),
     Revision(&'a str),
+    VersionReq(&'a VersionReq),
 }
 
 impl PackageContents {

@@ -98,6 +98,10 @@ pub fn list_dependencies_json_in_dir(cwd: &Path) -> Result<DependencyList> {
                         kind: "revision",
                         value: revision.to_string(),
                     },
+                    RequestedGitRef::VersionReq(version) => DependencyListRequestedRef {
+                        kind: "version",
+                        value: version.to_string(),
+                    },
                 }),
             };
 

@@ -52,7 +52,13 @@ pub(super) enum Command {
         branch: Option<String>,
         #[arg(
             long,
-            conflicts_with_all = ["tag", "branch"],
+            conflicts_with_all = ["tag", "branch", "revision"],
+            help = "Select the highest compatible semver tag, such as ^1.2.0"
+        )]
+        version: Option<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["tag", "branch", "version"],
             help = "Pin a specific Git commit revision"
         )]
         revision: Option<String>,

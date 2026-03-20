@@ -284,29 +284,8 @@ fn load_from_dependency_spec(
         }
         DependencySourceKind::Git => {
             let url = dependency.resolved_git_url()?;
-            let checkout = match dependency.requested_git_ref()? {
-                crate::manifest::RequestedGitRef::Tag(tag) => ensure_git_dependency(
-                    cache_root,
-                    &url,
-                    Some(crate::manifest::RequestedGitRef::Tag(tag)),
-                    true,
-                    reporter,
-                )?,
-                crate::manifest::RequestedGitRef::Branch(branch) => ensure_git_dependency(
-                    cache_root,
-                    &url,
-                    Some(crate::manifest::RequestedGitRef::Branch(branch)),
-                    true,
-                    reporter,
-                )?,
-                crate::manifest::RequestedGitRef::Revision(revision) => ensure_git_dependency(
-                    cache_root,
-                    &url,
-                    Some(crate::manifest::RequestedGitRef::Revision(revision)),
-                    true,
-                    reporter,
-                )?,
-            };
+            let checkout =
+                ensure_git_dependency(cache_root, &url, Some(dependency.requested_git_ref()?), true, reporter)?;
             let manifest = load_dependency_from_dir(&checkout.path).with_context(|| {
                 format!("dependency `{alias}` does not match the Nodus package layout")
             })?;
