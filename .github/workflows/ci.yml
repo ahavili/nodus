@@ -88,4 +88,4 @@ jobs:
           grep -q '^  version "' "${formula_path}"
           brew install WendellXY/nodus/nodus
           nodus --version
-          brew test nodus
+          nodus completion zsh > /dev/null
