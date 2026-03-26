@@ -1570,7 +1570,13 @@ HTTP/2 200 \r\n\
         fs::write(asset_root.join("README.md"), "readme").unwrap();
         fs::write(asset_root.join("LICENSE"), "license").unwrap();
         let zip_status = ProcessCommand::new("zip")
-            .args(["-qr", asset_path.to_str().unwrap(), "nodus.exe", "README.md", "LICENSE"])
+            .args([
+                "-qr",
+                asset_path.to_str().unwrap(),
+                "nodus.exe",
+                "README.md",
+                "LICENSE",
+            ])
             .current_dir(&asset_root)
             .status()
             .unwrap();
