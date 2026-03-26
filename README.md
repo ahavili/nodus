@@ -19,6 +19,7 @@
   <a href="#install">Install</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#common-tasks">Common Tasks</a> •
+  <a href="#advanced">Advanced</a> •
   <a href="#manifest">Manifest</a> •
   <a href="./CONTRIBUTING.md">Contributing</a>
 </p>
@@ -60,18 +61,6 @@ Install a specific release:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
 ```
-
-Supported platforms: macOS (`x86_64`, `arm64`), Linux (`x86_64`, `arm64`/`aarch64`), and Windows (`x86_64`).
-
-By default, Nodus stores shared mirrors, checkouts, and snapshots here:
-
-```text
-macOS:   ~/Library/Application Support/nodus/
-Linux:   ~/.local/state/nodus/              (or $XDG_STATE_HOME/nodus/)
-Windows: %LOCALAPPDATA%\nodus\
-```
-
-Override that location for any command with `--store-path <path>`.
 
 ## Quick Start
 
@@ -205,6 +194,24 @@ nodus completion bash
 nodus completion zsh
 nodus completion fish
 ```
+
+## Advanced
+
+Supported platforms:
+
+- macOS (`x86_64`, `arm64`)
+- Linux (`x86_64`, `arm64`/`aarch64`)
+- Windows (`x86_64`)
+
+By default, Nodus stores shared mirrors, checkouts, and snapshots here:
+
+```text
+macOS:   ~/Library/Application Support/nodus/
+Linux:   ~/.local/state/nodus/              (or $XDG_STATE_HOME/nodus/)
+Windows: %LOCALAPPDATA%\nodus\
+```
+
+Override that location for any command with `--store-path <path>`.
 
 ## When To Use `sync` vs `update`
 

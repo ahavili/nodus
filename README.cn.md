@@ -19,6 +19,7 @@
   <a href="#install">安装</a> •
   <a href="#quick-start">快速开始</a> •
   <a href="#common-tasks">常见任务</a> •
+  <a href="#advanced">高级用法</a> •
   <a href="#manifest">清单</a> •
   <a href="./CONTRIBUTING.md">参与贡献</a>
 </p>
@@ -61,18 +62,6 @@ curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | b
 ```bash
 curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | bash -s -- --version v0.1.0
 ```
-
-当前支持的平台：macOS（`x86_64`、`arm64`）、Linux（`x86_64`、`arm64`/`aarch64`）和 Windows（`x86_64`）。
-
-默认情况下，Nodus 会把共享镜像、检出和快照存到这里：
-
-```text
-macOS:   ~/Library/Application Support/nodus/
-Linux:   ~/.local/state/nodus/              (或 $XDG_STATE_HOME/nodus/)
-Windows: %LOCALAPPDATA%\nodus\
-```
-
-任意命令都可以通过 `--store-path <path>` 覆盖这个位置。
 
 <a id="quick-start"></a>
 ## 快速开始
@@ -208,6 +197,25 @@ nodus completion bash
 nodus completion zsh
 nodus completion fish
 ```
+
+<a id="advanced"></a>
+## 高级用法
+
+当前支持的平台：
+
+- macOS（`x86_64`、`arm64`）
+- Linux（`x86_64`、`arm64`/`aarch64`）
+- Windows（`x86_64`）
+
+默认情况下，Nodus 会把共享镜像、检出和快照存到这里：
+
+```text
+macOS:   ~/Library/Application Support/nodus/
+Linux:   ~/.local/state/nodus/              (或 $XDG_STATE_HOME/nodus/)
+Windows: %LOCALAPPDATA%\nodus\
+```
+
+任意命令都可以通过 `--store-path <path>` 覆盖这个位置。
 
 ## 什么时候用 `sync`，什么时候用 `update`
 
