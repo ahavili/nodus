@@ -889,6 +889,14 @@ mod tests {
         (reporter, buffer)
     }
 
+    fn host_binary_name() -> &'static str {
+        executable_file_name(current_host_platform())
+    }
+
+    fn host_installer_name() -> &'static str {
+        release_installer_script_name_for_platform(current_host_platform())
+    }
+
     fn test_options(current_exe: PathBuf) -> CheckOptions {
         CheckOptions {
             now_unix_secs: CHECK_INTERVAL_SECS,
@@ -965,7 +973,7 @@ mod tests {
             r#"{"installs":{"nodus 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
         )
         .unwrap();
-        let binary_path = cargo_home.join("bin").join(BIN_NAME);
+        let binary_path = cargo_home.join("bin").join(host_binary_name());
         let mut options = test_options(binary_path.clone());
         options.cargo_home = Some(cargo_home);
 
@@ -985,7 +993,7 @@ mod tests {
             r#"{"installs":{"nodus 0.4.0 (path+file:///tmp/nodus)":{"bins":["nodus"]}}}"#,
         )
         .unwrap();
-        let binary_path = cargo_home.join("bin").join(BIN_NAME);
+        let binary_path = cargo_home.join("bin").join(host_binary_name());
         let mut options = test_options(binary_path.clone());
         options.cargo_home = Some(cargo_home);
 
@@ -1023,7 +1031,7 @@ mod tests {
             PlannedUpgrade::Unsupported { message, .. } => {
                 assert!(message.contains("could not determine"));
                 assert!(message.contains("cargo install --locked --force nodus --version 0.4.1"));
-                assert!(message.contains("install.sh"));
+                assert!(message.contains(host_installer_name()));
             }
             other => panic!("expected unsupported plan, got {other:?}"),
         }
@@ -1039,7 +1047,7 @@ mod tests {
             r#"{"installs":{"nodus 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
         )
         .unwrap();
-        let binary_path = cargo_home.join("bin").join(BIN_NAME);
+        let binary_path = cargo_home.join("bin").join(host_binary_name());
         let latest = LatestRelease {
             tag: "v0.4.1".into(),
             version: Version::parse("0.4.1").unwrap(),
@@ -1083,7 +1091,10 @@ mod tests {
                 latest,
                 binary_path: binary_path.clone(),
                 install_dir: binary_path.parent().unwrap().to_path_buf(),
-                script_url: tagged_install_script_url_for_platform("v0.4.1", HostPlatform::Unix),
+                script_url: tagged_install_script_url_for_platform(
+                    "v0.4.1",
+                    current_host_platform(),
+                ),
             }
         );
     }
@@ -1167,7 +1178,7 @@ mod tests {
             r#"{"installs":{"nodus 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
         )
         .unwrap();
-        let binary_path = cargo_home.join("bin").join(BIN_NAME);
+        let binary_path = cargo_home.join("bin").join(host_binary_name());
         let mut options = test_options(binary_path);
         options.cargo_home = Some(cargo_home);
         let latest = LatestRelease {
