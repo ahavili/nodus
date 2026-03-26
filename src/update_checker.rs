@@ -1293,9 +1293,10 @@ HTTP/2 200 \r\n\
         assert_eq!(marker["install_method"], "github_release");
         assert_eq!(marker["repo_slug"], REPO_SLUG);
         assert_eq!(marker["binary_name"], BIN_NAME);
+        let marker_binary_path = PathBuf::from(marker["binary_path"].as_str().unwrap());
         assert_eq!(
-            marker["binary_path"],
-            serde_json::Value::String(install_dir.join(BIN_NAME).display().to_string())
+            canonicalize_or_identity(&marker_binary_path),
+            canonicalize_or_identity(&install_dir.join(BIN_NAME))
         );
 
         let uninstall_output = ProcessCommand::new("bash")
