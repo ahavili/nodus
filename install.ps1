@@ -114,9 +114,21 @@ function Verify-Checksum([string]$ArchivePath, [string]$ChecksumPath, [string]$A
     }
 }
 
-function Install-Binary([string]$ExtractedDir, [string]$DestinationDir) {
-    $sourceBinary = Join-Path $ExtractedDir $ExecutableName
-    if (-not (Test-Path -LiteralPath $sourceBinary -PathType Leaf)) {
+function Install-Binary([string]$ExtractedRoot, [string]$VersionedExtractedDir, [string]$DestinationDir) {
+    $candidates = @(
+        (Join-Path $VersionedExtractedDir $ExecutableName),
+        (Join-Path $ExtractedRoot $ExecutableName)
+    )
+
+    $sourceBinary = $null
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            $sourceBinary = $candidate
+            break
+        }
+    }
+
+    if ($null -eq $sourceBinary) {
         Fail "archive did not contain $ExecutableName"
     }
 
@@ -213,7 +225,7 @@ try {
 
     New-Item -ItemType Directory -Force -Path $extractedRoot | Out-Null
     Expand-Archive -Path $archivePath -DestinationPath $extractedRoot -Force
-    Install-Binary $extractedDir $InstallDir
+    Install-Binary $extractedRoot $extractedDir $InstallDir
     Write-InstallMarker $InstallDir
     Warn-If-NotOnPath $InstallDir
     Log "Installed $BinaryName $Version"

@@ -1562,21 +1562,16 @@ HTTP/2 200 \r\n\
         let temp = tempfile::TempDir::new().unwrap();
         let fake_bin = temp.path().join("fake-bin");
         let install_dir = temp.path().join("install");
-        let asset_root = temp
-            .path()
-            .join("asset")
-            .join("nodus-v0.3.4-x86_64-pc-windows-msvc");
+        let asset_root = temp.path().join("asset");
         let asset_path = temp.path().join("nodus-v0.3.4-x86_64-pc-windows-msvc.zip");
         fs::create_dir_all(&fake_bin).unwrap();
         fs::create_dir_all(&asset_root).unwrap();
         fs::write(asset_root.join("nodus.exe"), "windows-binary").unwrap();
+        fs::write(asset_root.join("README.md"), "readme").unwrap();
+        fs::write(asset_root.join("LICENSE"), "license").unwrap();
         let zip_status = ProcessCommand::new("zip")
-            .args([
-                "-qr",
-                asset_path.to_str().unwrap(),
-                asset_root.file_name().unwrap().to_str().unwrap(),
-            ])
-            .current_dir(temp.path().join("asset"))
+            .args(["-qr", asset_path.to_str().unwrap(), "nodus.exe", "README.md", "LICENSE"])
+            .current_dir(&asset_root)
             .status()
             .unwrap();
         assert!(zip_status.success());
@@ -1637,6 +1632,102 @@ HTTP/2 200 \r\n\
             .args(["--uninstall", "--install-dir"])
             .arg(&install_dir)
             .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            uninstall_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&uninstall_output.stderr)
+        );
+        assert!(!install_dir.join("nodus.exe").exists());
+        assert!(!marker_path.exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn powershell_install_script_handles_windows_release_assets_from_flat_zip_root() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let install_dir = temp.path().join("install");
+        let asset_dir = temp.path().join("assets");
+        fs::create_dir_all(&asset_dir).unwrap();
+
+        fs::write(asset_dir.join("nodus.exe"), "windows-binary").unwrap();
+        fs::write(asset_dir.join("README.md"), "readme").unwrap();
+        fs::write(asset_dir.join("LICENSE"), "license").unwrap();
+
+        let asset_name = "nodus-v0.3.4-x86_64-pc-windows-msvc.zip";
+        let asset_path = asset_dir.join(asset_name);
+        let compress_cmd = format!(
+            "Compress-Archive -Path 'nodus.exe','README.md','LICENSE' -DestinationPath '{}' -Force",
+            asset_path.to_string_lossy().replace('\'', "''")
+        );
+        let zip_status = ProcessCommand::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &compress_cmd,
+            ])
+            .current_dir(&asset_dir)
+            .status()
+            .unwrap();
+        assert!(zip_status.success());
+
+        let script_body = fs::read_to_string(powershell_script_path()).unwrap();
+        let patched_script = script_body.replacen(
+            "Invoke-WebRequest -Uri $Url -OutFile $OutputPath",
+            "Copy-Item -LiteralPath (Join-Path $env:NODUS_TEST_ASSET_DIR (Split-Path -Leaf $Url)) -Destination $OutputPath -Force",
+            1,
+        );
+        assert_ne!(patched_script, script_body);
+
+        let test_script_path = temp.path().join("install-test.ps1");
+        fs::write(&test_script_path, patched_script).unwrap();
+
+        let install_output = ProcessCommand::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &test_script_path.to_string_lossy(),
+                "-Version",
+                "v0.3.4",
+                "-InstallDir",
+                &install_dir.to_string_lossy(),
+            ])
+            .env("NODUS_TEST_ASSET_DIR", &asset_dir)
+            .output()
+            .unwrap();
+        assert!(
+            install_output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&install_output.stderr)
+        );
+
+        let marker_path = install_dir.join(INSTALL_MARKER_FILE);
+        let marker: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&marker_path).unwrap()).unwrap();
+        assert_eq!(marker["binary_name"], BIN_NAME);
+        let marker_binary_path = PathBuf::from(marker["binary_path"].as_str().unwrap());
+        assert_eq!(
+            canonicalize_or_identity(&marker_binary_path),
+            canonicalize_or_identity(&install_dir.join("nodus.exe"))
+        );
+        assert!(install_dir.join("nodus.exe").exists());
+
+        let uninstall_output = ProcessCommand::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &test_script_path.to_string_lossy(),
+                "-Uninstall",
+                "-InstallDir",
+                &install_dir.to_string_lossy(),
+            ])
             .output()
             .unwrap();
         assert!(

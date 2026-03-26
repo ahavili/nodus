@@ -59,10 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | b
 Install the latest prebuilt binary on Windows with PowerShell:
 
 ```powershell
-$script = Join-Path $env:TEMP "nodus-install.ps1"
-Invoke-WebRequest "https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1" -OutFile $script
-& $script
-Remove-Item $script
+irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex
 ```
 
 Install with Homebrew:
@@ -231,10 +228,7 @@ curl -fsSL https://raw.githubusercontent.com/WendellXY/nodus/main/install.sh | b
 Install a specific release on Windows:
 
 ```powershell
-$script = Join-Path $env:TEMP "nodus-install.ps1"
-Invoke-WebRequest "https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1" -OutFile $script
-& $script -Version v0.1.0
-Remove-Item $script
+$env:NODUS_VERSION='v0.1.0'; irm https://raw.githubusercontent.com/WendellXY/nodus/main/install.ps1 | iex
 ```
 
 ## When To Use `sync` vs `update`

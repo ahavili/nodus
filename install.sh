@@ -260,9 +260,13 @@ extract_archive() {
 }
 
 install_binary() {
-  local extracted_dir source_bin installed_bin
+  local extracted_dir extracted_root source_bin installed_bin
   extracted_dir="$1"
+  extracted_root="$2"
   source_bin="${extracted_dir}/${EXECUTABLE_NAME}"
+  if [ ! -f "${source_bin}" ]; then
+    source_bin="${extracted_root}/${EXECUTABLE_NAME}"
+  fi
   installed_bin="${INSTALL_DIR}/${EXECUTABLE_NAME}"
 
   [ -f "${source_bin}" ] || fail "archive did not contain ${BIN_NAME}"
@@ -375,7 +379,7 @@ main() {
 
   mkdir -p "${extracted_root}"
   extract_archive "${archive_path}" "${extracted_root}"
-  install_binary "${extracted_dir}"
+  install_binary "${extracted_dir}" "${extracted_root}"
   write_install_marker
   warn_if_not_on_path
   log "Installed ${BIN_NAME} ${VERSION}"
