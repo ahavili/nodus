@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -6,10 +8,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
 
+use crate::paths::display_path;
 use crate::report::Reporter;
 
+const BIN_NAME: &str = "nodus";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+const CRATES_IO_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
+const INSTALL_MARKER_FILE: &str = "nodus.install.json";
 const REPO_SLUG: &str = "WendellXY/nodus";
 const STATE_FILE: &str = "update-check.json";
 
@@ -22,7 +29,9 @@ struct LatestRelease {
 #[derive(Debug, Clone)]
 struct CheckOptions {
     now_unix_secs: u64,
+    current_exe: PathBuf,
     current_version: Version,
+    cargo_home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +43,79 @@ struct UpdateCheckState {
     last_notified_tag: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InstallTarget {
+    CargoRegistry { binary_path: PathBuf },
+    GithubRelease { binary_path: PathBuf },
+    Unsupported(UnsupportedInstall),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UnsupportedInstall {
+    Ambiguous {
+        binary_path: PathBuf,
+    },
+    CargoPath {
+        binary_path: PathBuf,
+        source: String,
+    },
+    CargoGit {
+        binary_path: PathBuf,
+        source: String,
+    },
+    CargoOther {
+        binary_path: PathBuf,
+        source: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PlannedSelfUpdate {
+    AlreadyCurrent {
+        version: Version,
+    },
+    CargoRegistry {
+        current_version: Version,
+        latest: LatestRelease,
+        binary_path: PathBuf,
+        command: Vec<String>,
+    },
+    GithubRelease {
+        current_version: Version,
+        latest: LatestRelease,
+        binary_path: PathBuf,
+        install_dir: PathBuf,
+        script_url: String,
+    },
+    Unsupported {
+        latest: LatestRelease,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ReleaseInstallMarker {
+    install_method: String,
+    repo_slug: String,
+    binary_name: String,
+    binary_path: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoInstallState {
+    installs: BTreeMap<String, CargoInstallEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoInstallEntry {
+    bins: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyCargoInstallState {
+    v1: BTreeMap<String, Vec<String>>,
+}
+
 pub fn maybe_notify(store_root: &Path, reporter: &Reporter) {
     let options = match CheckOptions::for_current_binary() {
         Ok(options) => options,
@@ -43,15 +125,105 @@ pub fn maybe_notify(store_root: &Path, reporter: &Reporter) {
     let _ = maybe_notify_with(store_root, reporter, &options, fetch_latest_release);
 }
 
+pub fn self_update(reporter: &Reporter) -> Result<()> {
+    let options = CheckOptions::for_current_binary()?;
+    reporter.status("Checking", "latest Nodus release")?;
+    let latest = fetch_latest_release()?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "could not determine the latest Nodus release from {}",
+            releases_latest_url()
+        )
+    })?;
+
+    match plan_self_update(&options, &latest) {
+        PlannedSelfUpdate::AlreadyCurrent { version } => {
+            reporter.finish(format!("nodus {version} is already current"))?;
+            Ok(())
+        }
+        PlannedSelfUpdate::CargoRegistry {
+            current_version,
+            latest,
+            binary_path,
+            command,
+        } => {
+            ensure_install_directory_writable(&binary_path).map_err(|_| {
+                anyhow::anyhow!(cargo_permission_guidance(&latest.version, &binary_path))
+            })?;
+            reporter.status(
+                "Updating",
+                format!(
+                    "nodus {current_version} -> {} via cargo install",
+                    latest.version
+                ),
+            )?;
+            run_checked_command(
+                &command[0],
+                &command[1..],
+                "cargo install",
+                "failed to update nodus via cargo install",
+            )?;
+            reporter.finish(format!(
+                "updated nodus {current_version} -> {}",
+                latest.version
+            ))?;
+            Ok(())
+        }
+        PlannedSelfUpdate::GithubRelease {
+            current_version,
+            latest,
+            binary_path,
+            install_dir,
+            script_url,
+        } => {
+            ensure_install_directory_writable(&binary_path).map_err(|_| {
+                anyhow::anyhow!(release_permission_guidance(&latest.tag, &install_dir))
+            })?;
+            let temp = tempfile::TempDir::new().context("failed to create temp dir")?;
+            let script_path = temp.path().join("install.sh");
+            reporter.status("Downloading", format!("installer for {}", latest.tag))?;
+            download_to_path(&script_url, &script_path)?;
+            reporter.status(
+                "Updating",
+                format!(
+                    "nodus {current_version} -> {} via GitHub release installer",
+                    latest.version
+                ),
+            )?;
+            run_checked_command(
+                "bash",
+                &[
+                    script_path.to_string_lossy().into_owned(),
+                    "--version".into(),
+                    latest.tag.clone(),
+                    "--install-dir".into(),
+                    install_dir.to_string_lossy().into_owned(),
+                ],
+                "bash",
+                "failed to update nodus via the GitHub release installer",
+            )?;
+            reporter.finish(format!(
+                "updated nodus {current_version} -> {}",
+                latest.version
+            ))?;
+            Ok(())
+        }
+        PlannedSelfUpdate::Unsupported { message, .. } => anyhow::bail!(message),
+    }
+}
+
 impl CheckOptions {
     fn for_current_binary() -> Result<Self> {
+        let current_exe =
+            env::current_exe().context("failed to determine the current nodus executable path")?;
         Ok(Self {
             now_unix_secs: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .context("system clock is before the Unix epoch")?
                 .as_secs(),
+            current_exe: canonicalize_or_identity(&current_exe),
             current_version: Version::parse(env!("CARGO_PKG_VERSION"))
                 .context("failed to parse the current package version")?,
+            cargo_home: resolve_cargo_home(),
         })
     }
 }
@@ -108,14 +280,124 @@ where
         return Ok(());
     }
 
-    reporter.warning(format!(
-        "nodus {} is available (current {}); see {}",
-        latest_release.version,
-        options.current_version,
-        install_url()
-    ))?;
+    let notice = update_notice_message(options, &latest_release);
+    reporter.warning(notice)?;
     state.last_notified_tag = Some(latest_release.tag);
     persist_state(&state_path, &state)
+}
+
+fn plan_self_update(options: &CheckOptions, latest: &LatestRelease) -> PlannedSelfUpdate {
+    if latest.version <= options.current_version {
+        return PlannedSelfUpdate::AlreadyCurrent {
+            version: options.current_version.clone(),
+        };
+    }
+
+    match detect_install_target(options) {
+        InstallTarget::CargoRegistry { binary_path } => PlannedSelfUpdate::CargoRegistry {
+            current_version: options.current_version.clone(),
+            latest: latest.clone(),
+            binary_path,
+            command: cargo_update_command(&latest.version),
+        },
+        InstallTarget::GithubRelease { binary_path } => PlannedSelfUpdate::GithubRelease {
+            current_version: options.current_version.clone(),
+            latest: latest.clone(),
+            install_dir: binary_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf(),
+            binary_path,
+            script_url: tagged_install_script_url(&latest.tag),
+        },
+        InstallTarget::Unsupported(install) => PlannedSelfUpdate::Unsupported {
+            latest: latest.clone(),
+            message: unsupported_update_message(latest, &install),
+        },
+    }
+}
+
+fn detect_install_target(options: &CheckOptions) -> InstallTarget {
+    if let Some(install) = detect_cargo_install(&options.current_exe, options.cargo_home.as_deref())
+    {
+        return install;
+    }
+
+    detect_release_install(&options.current_exe)
+}
+
+fn detect_cargo_install(current_exe: &Path, cargo_home: Option<&Path>) -> Option<InstallTarget> {
+    let cargo_home = cargo_home?;
+    let cargo_bin = cargo_home.join("bin").join(BIN_NAME);
+    if current_exe != cargo_bin {
+        return None;
+    }
+
+    let sources = load_cargo_install_sources(cargo_home, BIN_NAME);
+    let binary_path = current_exe.to_path_buf();
+
+    match sources.as_slice() {
+        [source] if source == CRATES_IO_SOURCE => {
+            Some(InstallTarget::CargoRegistry { binary_path })
+        }
+        [source] if source.starts_with("path+") => {
+            Some(InstallTarget::Unsupported(UnsupportedInstall::CargoPath {
+                binary_path,
+                source: source.clone(),
+            }))
+        }
+        [source] if source.starts_with("git+") => {
+            Some(InstallTarget::Unsupported(UnsupportedInstall::CargoGit {
+                binary_path,
+                source: source.clone(),
+            }))
+        }
+        [source] => Some(InstallTarget::Unsupported(UnsupportedInstall::CargoOther {
+            binary_path,
+            source: source.clone(),
+        })),
+        _ => Some(InstallTarget::Unsupported(UnsupportedInstall::Ambiguous {
+            binary_path,
+        })),
+    }
+}
+
+fn detect_release_install(current_exe: &Path) -> InstallTarget {
+    let marker_path = install_marker_path(current_exe);
+    let Some(marker) = load_release_install_marker(&marker_path) else {
+        return InstallTarget::Unsupported(UnsupportedInstall::Ambiguous {
+            binary_path: current_exe.to_path_buf(),
+        });
+    };
+
+    if marker.install_method != "github_release"
+        || marker.repo_slug != REPO_SLUG
+        || marker.binary_name != BIN_NAME
+        || canonicalize_or_identity(&marker.binary_path) != current_exe
+    {
+        return InstallTarget::Unsupported(UnsupportedInstall::Ambiguous {
+            binary_path: current_exe.to_path_buf(),
+        });
+    }
+
+    InstallTarget::GithubRelease {
+        binary_path: current_exe.to_path_buf(),
+    }
+}
+
+fn update_notice_message(options: &CheckOptions, latest: &LatestRelease) -> String {
+    match detect_install_target(options) {
+        InstallTarget::CargoRegistry { .. } | InstallTarget::GithubRelease { .. } => format!(
+            "nodus {} is available (current {}); run `nodus self-update`",
+            latest.version, options.current_version
+        ),
+        InstallTarget::Unsupported(_) => format!(
+            "nodus {} is available (current {}); see {}",
+            latest.version,
+            options.current_version,
+            install_url()
+        ),
+    }
 }
 
 fn should_attempt_remote_check(
@@ -156,6 +438,69 @@ fn curl_head_request(url: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn run_checked_command(
+    program: &str,
+    args: &[String],
+    action: &str,
+    failure_context: &str,
+) -> Result<()> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run {action}"))?;
+    if !output.status.success() {
+        anyhow::bail!("{failure_context}: {}", command_failure_output(&output));
+    }
+
+    Ok(())
+}
+
+fn download_to_path(url: &str, output_path: &Path) -> Result<()> {
+    let output = Command::new("curl")
+        .arg("-fsSL")
+        .arg(url)
+        .arg("-o")
+        .arg(output_path)
+        .output()
+        .with_context(|| format!("failed to run curl for {url}"))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "failed to download {}: {}",
+            url,
+            command_failure_output(&output)
+        );
+    }
+
+    Ok(())
+}
+
+fn command_failure_output(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !stdout.is_empty() {
+        return stdout;
+    }
+
+    format!("process exited with status {}", output.status)
+}
+
+fn ensure_install_directory_writable(binary_path: &Path) -> Result<()> {
+    let install_dir = binary_path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot determine the install directory for {}",
+            binary_path.display()
+        )
+    })?;
+    let probe = NamedTempFile::new_in(install_dir)
+        .with_context(|| format!("failed to write into {}", install_dir.display()))?;
+    drop(probe);
+    Ok(())
+}
+
 fn is_missing_command_error(error: &anyhow::Error) -> bool {
     error
         .chain()
@@ -192,6 +537,86 @@ fn parse_release_version(tag: &str) -> Option<Version> {
     Version::parse(normalized).ok()
 }
 
+fn cargo_update_command(version: &Version) -> Vec<String> {
+    vec![
+        "cargo".into(),
+        "install".into(),
+        "--locked".into(),
+        "--force".into(),
+        BIN_NAME.into(),
+        "--version".into(),
+        version.to_string(),
+    ]
+}
+
+fn tagged_install_script_url(tag: &str) -> String {
+    format!("https://raw.githubusercontent.com/{REPO_SLUG}/{tag}/install.sh")
+}
+
+fn cargo_permission_guidance(version: &Version, binary_path: &Path) -> String {
+    format!(
+        "the current install target {} is not writable by this user.\nRerun `{}` in the account or shell environment that owns that install.",
+        display_path(binary_path),
+        cargo_update_command(version).join(" ")
+    )
+}
+
+fn release_permission_guidance(tag: &str, install_dir: &Path) -> String {
+    format!(
+        "the current install target {} is not writable by this user.\nRerun `{}` in a shell with permission to write there.",
+        display_path(install_dir),
+        manual_release_update_command(tag, install_dir)
+    )
+}
+
+fn unsupported_update_message(latest: &LatestRelease, install: &UnsupportedInstall) -> String {
+    match install {
+        UnsupportedInstall::CargoPath {
+            binary_path,
+            source,
+        } => format!(
+            "automatic self-update only supports crates.io cargo installs.\nThe current binary {} was installed from `{source}`.\nReinstall it from that original Cargo path source.",
+            display_path(binary_path),
+        ),
+        UnsupportedInstall::CargoGit {
+            binary_path,
+            source,
+        } => format!(
+            "automatic self-update only supports crates.io cargo installs.\nThe current binary {} was installed from `{source}`.\nReinstall it from that original Cargo git source.",
+            display_path(binary_path),
+        ),
+        UnsupportedInstall::CargoOther {
+            binary_path,
+            source,
+        } => format!(
+            "automatic self-update does not support the current Cargo install source for {}.\nDetected source: `{source}`.\nUpdate it manually using that original installation method.",
+            display_path(binary_path),
+        ),
+        UnsupportedInstall::Ambiguous { binary_path } => {
+            let install_dir = binary_path.parent().unwrap_or_else(|| Path::new("."));
+            format!(
+                "could not determine how {} was installed.\nUpdate it manually using the original installation method.\nCommon commands:\n  {}\n  {}",
+                display_path(binary_path),
+                cargo_update_command(&latest.version).join(" "),
+                manual_release_update_command(&latest.tag, install_dir),
+            )
+        }
+    }
+}
+
+fn manual_release_update_command(tag: &str, install_dir: &Path) -> String {
+    format!(
+        "curl -fsSL {} | bash -s -- --version {} --install-dir {}",
+        shell_quote(&tagged_install_script_url(tag)),
+        shell_quote(tag),
+        shell_quote(&install_dir.to_string_lossy()),
+    )
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 fn state_path(store_root: &Path) -> PathBuf {
     store_root.join(STATE_FILE)
 }
@@ -202,6 +627,80 @@ fn releases_latest_url() -> String {
 
 fn install_url() -> String {
     format!("https://github.com/{REPO_SLUG}#install")
+}
+
+fn install_marker_path(binary_path: &Path) -> PathBuf {
+    binary_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(INSTALL_MARKER_FILE)
+}
+
+fn load_release_install_marker(path: &Path) -> Option<ReleaseInstallMarker> {
+    let contents = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
+
+fn resolve_cargo_home() -> Option<PathBuf> {
+    if let Some(cargo_home) = env::var_os("CARGO_HOME") {
+        let cargo_home = PathBuf::from(cargo_home);
+        if cargo_home.is_absolute() {
+            return Some(cargo_home);
+        }
+    }
+
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo"))
+}
+
+fn load_cargo_install_sources(cargo_home: &Path, bin_name: &str) -> Vec<String> {
+    let json_path = cargo_home.join(".crates2.json");
+    if let Ok(contents) = fs::read_to_string(&json_path) {
+        if let Ok(state) = serde_json::from_str::<CargoInstallState>(&contents) {
+            let sources = state
+                .installs
+                .into_iter()
+                .filter_map(|(package_id, install)| {
+                    install
+                        .bins
+                        .iter()
+                        .any(|bin| bin == bin_name)
+                        .then_some(package_id)
+                })
+                .filter_map(|package_id| parse_cargo_source(&package_id))
+                .collect::<Vec<_>>();
+            if !sources.is_empty() {
+                return sources;
+            }
+        }
+    }
+
+    let toml_path = cargo_home.join(".crates.toml");
+    if let Ok(contents) = fs::read_to_string(&toml_path) {
+        if let Ok(state) = toml::from_str::<LegacyCargoInstallState>(&contents) {
+            return state
+                .v1
+                .into_iter()
+                .filter_map(|(package_id, bins)| {
+                    bins.iter().any(|bin| bin == bin_name).then_some(package_id)
+                })
+                .filter_map(|package_id| parse_cargo_source(&package_id))
+                .collect();
+        }
+    }
+
+    Vec::new()
+}
+
+fn parse_cargo_source(package_id: &str) -> Option<String> {
+    let open = package_id.rfind(" (")?;
+    package_id
+        .strip_suffix(')')?
+        .get(open + 2..)
+        .map(ToOwned::to_owned)
+}
+
+fn canonicalize_or_identity(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn load_state(path: &Path) -> Result<UpdateCheckState> {
@@ -222,7 +721,6 @@ fn persist_state(path: &Path, state: &UpdateCheckState) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
     use std::io::{self, Write};
     use std::sync::{Arc, Mutex};
 
@@ -249,17 +747,34 @@ mod tests {
         }
     }
 
-    fn options(now_unix_secs: u64, current_version: &str) -> CheckOptions {
-        CheckOptions {
-            now_unix_secs,
-            current_version: Version::parse(current_version).unwrap(),
-        }
-    }
-
     fn reporter_with_buffer() -> (Reporter, SharedBuffer) {
         let buffer = SharedBuffer::default();
         let reporter = Reporter::sink(ColorMode::Never, buffer.clone());
         (reporter, buffer)
+    }
+
+    fn test_options(current_exe: PathBuf) -> CheckOptions {
+        CheckOptions {
+            now_unix_secs: CHECK_INTERVAL_SECS,
+            current_exe,
+            current_version: Version::parse("0.3.3").unwrap(),
+            cargo_home: None,
+        }
+    }
+
+    fn write_release_marker(binary_path: &Path) {
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+        fs::write(
+            install_marker_path(binary_path),
+            serde_json::to_vec_pretty(&ReleaseInstallMarker {
+                install_method: "github_release".into(),
+                repo_slug: REPO_SLUG.into(),
+                binary_name: BIN_NAME.into(),
+                binary_path: binary_path.to_path_buf(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
     }
 
     fn read_state(path: &Path) -> UpdateCheckState {
@@ -297,17 +812,197 @@ mod tests {
     }
 
     #[test]
+    fn detects_registry_cargo_installs_from_crates2_json() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cargo_home = temp.path().join(".cargo");
+        fs::create_dir_all(cargo_home.join("bin")).unwrap();
+        fs::write(
+            cargo_home.join(".crates2.json"),
+            r#"{"installs":{"nodus 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
+        )
+        .unwrap();
+        let binary_path = cargo_home.join("bin").join(BIN_NAME);
+        let mut options = test_options(binary_path.clone());
+        options.cargo_home = Some(cargo_home);
+
+        assert_eq!(
+            detect_install_target(&options),
+            InstallTarget::CargoRegistry { binary_path }
+        );
+    }
+
+    #[test]
+    fn rejects_cargo_path_installs_for_self_update() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cargo_home = temp.path().join(".cargo");
+        fs::create_dir_all(cargo_home.join("bin")).unwrap();
+        fs::write(
+            cargo_home.join(".crates2.json"),
+            r#"{"installs":{"nodus 0.3.3 (path+file:///tmp/nodus)":{"bins":["nodus"]}}}"#,
+        )
+        .unwrap();
+        let binary_path = cargo_home.join("bin").join(BIN_NAME);
+        let mut options = test_options(binary_path.clone());
+        options.cargo_home = Some(cargo_home);
+
+        assert_eq!(
+            detect_install_target(&options),
+            InstallTarget::Unsupported(UnsupportedInstall::CargoPath {
+                binary_path,
+                source: "path+file:///tmp/nodus".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn detects_release_installs_from_a_marker_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let binary_path = temp.path().join("bin").join(BIN_NAME);
+        write_release_marker(&binary_path);
+
+        assert_eq!(
+            detect_install_target(&test_options(binary_path.clone())),
+            InstallTarget::GithubRelease { binary_path }
+        );
+    }
+
+    #[test]
+    fn falls_back_to_manual_guidance_for_ambiguous_installs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let binary_path = temp.path().join("bin").join(BIN_NAME);
+        let latest = LatestRelease {
+            tag: "v0.3.4".into(),
+            version: Version::parse("0.3.4").unwrap(),
+        };
+
+        match plan_self_update(&test_options(binary_path), &latest) {
+            PlannedSelfUpdate::Unsupported { message, .. } => {
+                assert!(message.contains("could not determine"));
+                assert!(message.contains("cargo install --locked --force nodus --version 0.3.4"));
+                assert!(message.contains("install.sh"));
+            }
+            other => panic!("expected unsupported plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plans_cargo_registry_updates_with_an_exact_version() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cargo_home = temp.path().join(".cargo");
+        fs::create_dir_all(cargo_home.join("bin")).unwrap();
+        fs::write(
+            cargo_home.join(".crates2.json"),
+            r#"{"installs":{"nodus 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
+        )
+        .unwrap();
+        let binary_path = cargo_home.join("bin").join(BIN_NAME);
+        let latest = LatestRelease {
+            tag: "v0.3.4".into(),
+            version: Version::parse("0.3.4").unwrap(),
+        };
+        let mut options = test_options(binary_path.clone());
+        options.cargo_home = Some(cargo_home);
+
+        assert_eq!(
+            plan_self_update(&options, &latest),
+            PlannedSelfUpdate::CargoRegistry {
+                current_version: Version::parse("0.3.3").unwrap(),
+                latest,
+                binary_path,
+                command: vec![
+                    "cargo".into(),
+                    "install".into(),
+                    "--locked".into(),
+                    "--force".into(),
+                    "nodus".into(),
+                    "--version".into(),
+                    "0.3.4".into(),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn plans_release_updates_against_the_tagged_installer_script() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let binary_path = temp.path().join("bin").join(BIN_NAME);
+        write_release_marker(&binary_path);
+        let latest = LatestRelease {
+            tag: "v0.3.4".into(),
+            version: Version::parse("0.3.4").unwrap(),
+        };
+
+        assert_eq!(
+            plan_self_update(&test_options(binary_path.clone()), &latest),
+            PlannedSelfUpdate::GithubRelease {
+                current_version: Version::parse("0.3.3").unwrap(),
+                latest,
+                binary_path: binary_path.clone(),
+                install_dir: binary_path.parent().unwrap().to_path_buf(),
+                script_url: tagged_install_script_url("v0.3.4"),
+            }
+        );
+    }
+
+    #[test]
+    fn notices_suggest_self_update_for_supported_installs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let cargo_home = temp.path().join(".cargo");
+        fs::create_dir_all(cargo_home.join("bin")).unwrap();
+        fs::write(
+            cargo_home.join(".crates2.json"),
+            r#"{"installs":{"nodus 0.3.3 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["nodus"]}}}"#,
+        )
+        .unwrap();
+        let binary_path = cargo_home.join("bin").join(BIN_NAME);
+        let mut options = test_options(binary_path);
+        options.cargo_home = Some(cargo_home);
+        let latest = LatestRelease {
+            tag: "v0.3.4".into(),
+            version: Version::parse("0.3.4").unwrap(),
+        };
+
+        assert_eq!(
+            update_notice_message(&options, &latest),
+            "nodus 0.3.4 is available (current 0.3.3); run `nodus self-update`"
+        );
+    }
+
+    #[test]
+    fn notices_fall_back_to_install_docs_for_unsupported_installs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let binary_path = temp.path().join("bin").join(BIN_NAME);
+        let latest = LatestRelease {
+            tag: "v0.3.4".into(),
+            version: Version::parse("0.3.4").unwrap(),
+        };
+
+        assert_eq!(
+            update_notice_message(&test_options(binary_path), &latest),
+            format!(
+                "nodus 0.3.4 is available (current 0.3.3); see {}",
+                install_url()
+            )
+        );
+    }
+
+    #[test]
     fn notifies_once_for_a_newer_release_and_persists_state() {
         let temp = tempfile::TempDir::new().unwrap();
         let state_file = state_path(temp.path());
         let (reporter, buffer) = reporter_with_buffer();
 
-        maybe_notify_with(temp.path(), &reporter, &options(86_400, "0.3.3"), || {
-            Ok(Some(LatestRelease {
-                tag: "v0.3.4".into(),
-                version: Version::parse("0.3.4").unwrap(),
-            }))
-        })
+        maybe_notify_with(
+            temp.path(),
+            &reporter,
+            &test_options(temp.path().join("bin").join(BIN_NAME)),
+            || {
+                Ok(Some(LatestRelease {
+                    tag: "v0.3.4".into(),
+                    version: Version::parse("0.3.4").unwrap(),
+                }))
+            },
+        )
         .unwrap();
 
         assert_eq!(
@@ -319,7 +1014,7 @@ mod tests {
         );
 
         let state = read_state(&state_file);
-        assert_eq!(state.last_attempted_at_unix_secs, Some(86_400));
+        assert_eq!(state.last_attempted_at_unix_secs, Some(CHECK_INTERVAL_SECS));
         assert_eq!(state.latest_known_tag.as_deref(), Some("v0.3.4"));
         assert_eq!(state.last_notified_tag.as_deref(), Some("v0.3.4"));
     }
@@ -337,24 +1032,19 @@ mod tests {
             },
         )
         .unwrap();
-        let attempted = Cell::new(false);
         let (reporter, buffer) = reporter_with_buffer();
 
         maybe_notify_with(
             temp.path(),
             &reporter,
-            &options(100 + CHECK_INTERVAL_SECS - 1, "0.3.3"),
-            || {
-                attempted.set(true);
-                Ok(Some(LatestRelease {
-                    tag: "v9.9.9".into(),
-                    version: Version::parse("9.9.9").unwrap(),
-                }))
+            &CheckOptions {
+                now_unix_secs: 100 + CHECK_INTERVAL_SECS - 1,
+                ..test_options(temp.path().join("bin").join(BIN_NAME))
             },
+            || panic!("throttled checks should not probe remotely"),
         )
         .unwrap();
 
-        assert!(!attempted.get());
         assert_eq!(
             buffer.contents(),
             format!(
@@ -382,7 +1072,10 @@ mod tests {
         maybe_notify_with(
             temp.path(),
             &reporter,
-            &options(CHECK_INTERVAL_SECS - 1, "0.3.3"),
+            &CheckOptions {
+                now_unix_secs: CHECK_INTERVAL_SECS - 1,
+                ..test_options(temp.path().join("bin").join(BIN_NAME))
+            },
             || panic!("throttled checks should not probe remotely"),
         )
         .unwrap();
@@ -408,7 +1101,10 @@ mod tests {
         maybe_notify_with(
             temp.path(),
             &reporter,
-            &options(CHECK_INTERVAL_SECS, "0.3.3"),
+            &CheckOptions {
+                now_unix_secs: CHECK_INTERVAL_SECS,
+                ..test_options(temp.path().join("bin").join(BIN_NAME))
+            },
             || {
                 Ok(Some(LatestRelease {
                     tag: "v0.3.5".into(),
@@ -437,8 +1133,10 @@ mod tests {
     fn does_not_notify_when_current_version_is_up_to_date() {
         let temp = tempfile::TempDir::new().unwrap();
         let (reporter, buffer) = reporter_with_buffer();
+        let mut options = test_options(temp.path().join("bin").join(BIN_NAME));
+        options.current_version = Version::parse("0.3.4").unwrap();
 
-        maybe_notify_with(temp.path(), &reporter, &options(0, "0.3.4"), || {
+        maybe_notify_with(temp.path(), &reporter, &options, || {
             Ok(Some(LatestRelease {
                 tag: "v0.3.4".into(),
                 version: Version::parse("0.3.4").unwrap(),
@@ -454,7 +1152,13 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let (reporter, buffer) = reporter_with_buffer();
 
-        maybe_notify_with(temp.path(), &reporter, &options(0, "0.3.3"), || Ok(None)).unwrap();
+        maybe_notify_with(
+            temp.path(),
+            &reporter,
+            &test_options(temp.path().join("bin").join(BIN_NAME)),
+            || Ok(None),
+        )
+        .unwrap();
 
         assert!(buffer.contents().is_empty());
     }
@@ -465,9 +1169,15 @@ mod tests {
         let state_file = state_path(temp.path());
         let (reporter, buffer) = reporter_with_buffer();
 
-        maybe_notify_with(temp.path(), &reporter, &options(123, "0.3.3"), || {
-            anyhow::bail!("network unavailable")
-        })
+        maybe_notify_with(
+            temp.path(),
+            &reporter,
+            &CheckOptions {
+                now_unix_secs: 123,
+                ..test_options(temp.path().join("bin").join(BIN_NAME))
+            },
+            || anyhow::bail!("network unavailable"),
+        )
         .unwrap();
 
         assert!(buffer.contents().is_empty());
@@ -507,6 +1217,10 @@ HTTP/2 200 \r\n\
         assert_eq!(
             install_url(),
             format!("https://github.com/{REPO_SLUG}#install")
+        );
+        assert_eq!(
+            tagged_install_script_url("v0.3.4"),
+            format!("https://raw.githubusercontent.com/{REPO_SLUG}/v0.3.4/install.sh")
         );
     }
 }

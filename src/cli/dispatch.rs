@@ -276,6 +276,7 @@ pub(super) fn run_command_in_dir(
             reporter.finish(message)?;
             Ok(())
         }
+        Command::SelfUpdate => crate::update_checker::self_update(reporter),
         Command::Init { dry_run } => {
             let summary = if dry_run {
                 crate::manifest::scaffold_init_in_dir_dry_run(cwd, reporter)?
@@ -493,7 +494,7 @@ pub(super) fn should_auto_check_for_updates(
     stderr_is_terminal
         && !update_check_disabled
         && !uses_json_output(command)
-        && !matches!(command, Command::Completion { .. })
+        && !matches!(command, Command::Completion { .. } | Command::SelfUpdate)
 }
 
 fn update_check_disabled() -> bool {
