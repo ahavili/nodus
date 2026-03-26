@@ -102,6 +102,8 @@ After installation, run:
 nodus <command>
 ```
 
+Interactive commands check GitHub releases at most once per day and print a warning on stderr when a newer Nodus version is available. Set `NODUS_NO_UPDATE_CHECK=1` to disable that notice.
+
 By default, Nodus stores shared mirrors, checkouts, and snapshots in the platform's local application data directory:
 
 ```text

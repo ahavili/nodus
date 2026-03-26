@@ -101,6 +101,8 @@ cargo install --path .
 nodus <command>
 ```
 
+交互式命令最多每天检查一次 GitHub releases；如果发现更新的 Nodus 版本，会在 stderr 输出一条警告。设置 `NODUS_NO_UPDATE_CHECK=1` 可关闭该提示。
+
 默认情况下，Nodus 会将共享镜像、检出和快照存储在平台本地应用数据目录中：
 
 ```text
