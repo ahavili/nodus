@@ -11,7 +11,7 @@ use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use super::args::{Cli, Command};
-use super::dispatch::run_command_in_dir;
+use super::dispatch::{run_command_in_dir, should_auto_check_for_updates};
 use crate::adapters::Adapter;
 use crate::report::{ColorMode, Reporter};
 use crate::resolver;
@@ -228,6 +228,35 @@ fn parses_outdated_subcommand() {
         Command::Outdated { json } => assert!(!json),
         other => panic!("expected outdated command, got {other:?}"),
     }
+}
+
+#[test]
+fn auto_update_checks_only_run_for_interactive_human_output_commands() {
+    assert!(should_auto_check_for_updates(
+        &Command::List { json: false },
+        true,
+        false
+    ));
+    assert!(!should_auto_check_for_updates(
+        &Command::List { json: true },
+        true,
+        false
+    ));
+    assert!(!should_auto_check_for_updates(
+        &Command::Completion { shell: Shell::Bash },
+        true,
+        false
+    ));
+    assert!(!should_auto_check_for_updates(
+        &Command::List { json: false },
+        false,
+        false
+    ));
+    assert!(!should_auto_check_for_updates(
+        &Command::List { json: false },
+        true,
+        true
+    ));
 }
 
 #[test]

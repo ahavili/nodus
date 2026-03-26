@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -19,7 +20,20 @@ pub fn run() -> ExitCode {
         Reporter::stderr()
     };
     let error_reporter = Reporter::stderr();
-    let result = run_command(cli, &output_reporter);
+    let should_check_for_updates = should_auto_check_for_updates(
+        &cli.command,
+        std::io::stderr().is_terminal(),
+        update_check_disabled(),
+    );
+    let result = (|| -> anyhow::Result<()> {
+        let cwd = std::env::current_dir()?;
+        let store_root = crate::cache::resolve_store_root(cli.store_path.as_deref())?;
+        run_command_in_dir(cli.command, &cwd, &store_root, &output_reporter)?;
+        if should_check_for_updates {
+            crate::update_checker::maybe_notify(&store_root, &error_reporter);
+        }
+        Ok(())
+    })();
 
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -30,12 +44,6 @@ pub fn run() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn run_command(cli: Cli, reporter: &Reporter) -> anyhow::Result<()> {
-    let cwd = std::env::current_dir()?;
-    let store_root = crate::cache::resolve_store_root(cli.store_path.as_deref())?;
-    run_command_in_dir(cli.command, &cwd, &store_root, reporter)
 }
 
 pub(super) fn run_command_in_dir(
@@ -475,6 +483,21 @@ fn uses_json_output(command: &Command) -> bool {
         | Command::Doctor { json } => *json,
         _ => false,
     }
+}
+
+pub(super) fn should_auto_check_for_updates(
+    command: &Command,
+    stderr_is_terminal: bool,
+    update_check_disabled: bool,
+) -> bool {
+    stderr_is_terminal
+        && !update_check_disabled
+        && !uses_json_output(command)
+        && !matches!(command, Command::Completion { .. })
+}
+
+fn update_check_disabled() -> bool {
+    std::env::var_os("NODUS_NO_UPDATE_CHECK").is_some_and(|value| value != "0")
 }
 
 fn write_json<T: Serialize>(reporter: &Reporter, value: &T) -> anyhow::Result<()> {
