@@ -1913,13 +1913,18 @@ fn is_runtime_managed_path(project_root: &Path, path: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(project_root) else {
         return false;
     };
-    let Some(first) = relative.components().next() else {
+    let mut components = relative.components();
+    let Some(first) = components.next() else {
         return false;
     };
-    matches!(
-        first.as_os_str().to_string_lossy().as_ref(),
-        ".agents" | ".claude" | ".codex" | ".cursor" | ".opencode"
-    )
+    match first.as_os_str().to_string_lossy().as_ref() {
+        ".agents" | ".claude" | ".codex" | ".cursor" | ".opencode" => true,
+        ".github" => matches!(
+            components.next().map(|component| component.as_os_str().to_string_lossy()),
+            Some(second) if second == "skills" || second == "agents"
+        ),
+        _ => false,
+    }
 }
 
 fn prune_empty_parent_dirs(path: &Path, project_root: &Path) -> Result<()> {
@@ -1929,6 +1934,7 @@ fn prune_empty_parent_dirs(path: &Path, project_root: &Path) -> Result<()> {
         project_root.join(".claude"),
         project_root.join(".codex"),
         project_root.join(".cursor"),
+        project_root.join(".github"),
         project_root.join(".opencode"),
     ];
     let mut current = path.parent();
@@ -5267,6 +5273,41 @@ shared = { path = "vendor/shared" }
                 .join(format!(".opencode/commands/{managed_command_file}"))
                 .exists()
         );
+    }
+
+    #[test]
+    fn recover_runtime_owned_paths_includes_copilot_assets_only() {
+        let project_root = Path::new("/tmp/project");
+        let desired_paths = [
+            project_root.join(".claude/skills/review_abc123"),
+            project_root.join(".github/skills/review_abc123"),
+            project_root.join(".github/agents/security_abc123.agent.md"),
+            project_root.join(".github/prompts/review.md"),
+        ]
+        .into_iter()
+        .collect::<HashSet<_>>();
+
+        let recovered = recover_runtime_owned_paths(project_root, &desired_paths);
+
+        assert!(recovered.contains(&project_root.join(".claude/skills/review_abc123")));
+        assert!(recovered.contains(&project_root.join(".github/skills/review_abc123")));
+        assert!(recovered.contains(&project_root.join(".github/agents/security_abc123.agent.md")));
+        assert!(!recovered.contains(&project_root.join(".github/prompts/review.md")));
+    }
+
+    #[test]
+    fn prune_empty_parent_dirs_stops_at_github_root() {
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp.path().join(".github/skills/review_abc123");
+        let skill_file = skill_dir.join("SKILL.md");
+        write_file(&skill_file, "# Review\n");
+
+        fs::remove_file(&skill_file).unwrap();
+        prune_empty_parent_dirs(&skill_file, temp.path()).unwrap();
+
+        assert!(temp.path().join(".github").exists());
+        assert!(!temp.path().join(".github/skills").exists());
+        assert!(!skill_dir.exists());
     }
 
     #[test]

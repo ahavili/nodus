@@ -513,7 +513,7 @@ pub fn build_output_plan(
                     copilot::agent_file(project_root, package, snapshot_root, agent)?,
                 )?;
                 plan.managed_files
-                    .insert(format!(".github/agents/{}.agent.md", agent.id));
+                    .insert(format!(".github/agents/{}", agent.id));
             }
 
             if selected_adapters.contains(Adapter::OpenCode)
