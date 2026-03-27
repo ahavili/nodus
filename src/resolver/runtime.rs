@@ -17,18 +17,22 @@ use self::support::{
 use self::support::{prune_empty_parent_dirs, write_managed_files};
 use crate::adapters::{Adapter, Adapters, ManagedFile, build_output_plan};
 use crate::execution::ExecutionMode;
+use crate::install_paths::{InstallPaths, InstallScope};
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
-use crate::manifest::{DependencyComponent, LoadedManifest, PackageRole, load_root_from_dir};
+use crate::manifest::{
+    DependencyComponent, LoadedManifest, PackageRole, load_root_from_dir_allow_missing,
+};
 use crate::paths::display_path;
 use crate::report::Reporter;
-use crate::selection::{resolve_adapter_selection, should_prompt_for_adapter};
+use crate::selection::{
+    resolve_adapter_selection, resolve_global_adapter_selection, should_prompt_for_adapter,
+};
 use crate::store::{SnapshotSource, snapshot_packages};
 #[cfg(test)]
 use std::fs;
 
 #[derive(Debug, Clone)]
 pub struct Resolution {
-    pub project_root: PathBuf,
     pub packages: Vec<ResolvedPackage>,
     pub warnings: Vec<String>,
 }
@@ -139,7 +143,7 @@ struct PlannedFileWrite {
 
 #[derive(Debug, Clone)]
 struct SyncExecutionPlan {
-    project_root: PathBuf,
+    runtime_root: PathBuf,
     owned_paths: HashSet<PathBuf>,
     desired_paths: HashSet<PathBuf>,
     manifest_write: Option<PlannedFileWrite>,
@@ -188,8 +192,9 @@ pub fn sync_in_dir_with_adapters(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    let install_paths = InstallPaths::project(cwd);
     sync_in_dir_with_adapters_mode(
-        cwd,
+        &install_paths,
         cache_root,
         if locked {
             SyncMode::Locked
@@ -213,8 +218,9 @@ pub fn sync_in_dir_with_adapters_frozen(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    let install_paths = InstallPaths::project(cwd);
     sync_in_dir_with_adapters_mode(
-        cwd,
+        &install_paths,
         cache_root,
         SyncMode::Frozen,
         allow_high_sensitivity,
@@ -235,8 +241,9 @@ pub fn sync_in_dir_with_adapters_dry_run(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    let install_paths = InstallPaths::project(cwd);
     sync_in_dir_with_adapters_mode(
-        cwd,
+        &install_paths,
         cache_root,
         if locked {
             SyncMode::Locked
@@ -260,8 +267,9 @@ pub fn sync_in_dir_with_adapters_frozen_dry_run(
     sync_on_launch: bool,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    let install_paths = InstallPaths::project(cwd);
     sync_in_dir_with_adapters_mode(
-        cwd,
+        &install_paths,
         cache_root,
         SyncMode::Frozen,
         allow_high_sensitivity,
@@ -275,7 +283,7 @@ pub fn sync_in_dir_with_adapters_frozen_dry_run(
 
 #[allow(clippy::too_many_arguments)]
 fn sync_in_dir_with_adapters_mode(
-    cwd: &Path,
+    install_paths: &InstallPaths,
     cache_root: &Path,
     sync_mode: SyncMode,
     allow_high_sensitivity: bool,
@@ -287,7 +295,7 @@ fn sync_in_dir_with_adapters_mode(
 ) -> Result<SyncSummary> {
     let mut collision_resolver = TtyManagedCollisionResolver;
     sync_in_dir_with_adapters_mode_and_collision_resolution(
-        cwd,
+        install_paths,
         cache_root,
         sync_mode,
         allow_high_sensitivity,
@@ -306,7 +314,7 @@ fn sync_in_dir_with_adapters_mode(
 
 #[allow(clippy::too_many_arguments)]
 fn sync_in_dir_with_adapters_mode_and_collision_resolution(
-    cwd: &Path,
+    install_paths: &InstallPaths,
     cache_root: &Path,
     sync_mode: SyncMode,
     allow_high_sensitivity: bool,
@@ -317,17 +325,31 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
     mut collision_resolver: Option<&mut dyn ManagedCollisionResolver>,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
-    crate::relay::ensure_no_pending_relay_edits_in_dir(cwd, cache_root)?;
+    if matches!(install_paths.scope, InstallScope::Project) {
+        crate::relay::ensure_no_pending_relay_edits_in_dir(&install_paths.config_root, cache_root)?;
+    }
     let has_root_override = root_override.is_some();
-    let original_root = load_root_from_dir(cwd)?;
+    let original_root = load_root_from_dir_allow_missing(&install_paths.config_root)?;
     let mut root = root_override.unwrap_or_else(|| original_root.clone());
     let mut adopted_owned_paths = HashSet::new();
-    let selection = resolve_adapter_selection(
-        cwd,
-        &root.manifest,
-        adapters,
-        !sync_mode.checks_lockfile() && should_prompt_for_adapter(),
-    )?;
+    let selection = match install_paths.scope {
+        InstallScope::Project => resolve_adapter_selection(
+            &install_paths.adapter_detection_root,
+            &root.manifest,
+            adapters,
+            !sync_mode.checks_lockfile() && should_prompt_for_adapter(),
+        )?,
+        InstallScope::Global => {
+            if sync_on_launch {
+                bail!("`nodus add --global` does not support `--sync-on-launch`");
+            }
+            resolve_global_adapter_selection(
+                &install_paths.adapter_detection_root,
+                &root.manifest,
+                adapters,
+            )?
+        }
+    };
     if selection.should_persist {
         if sync_mode.checks_lockfile() {
             bail!(
@@ -350,7 +372,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         root = original_root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
     }
 
-    let lockfile_path = cwd.join(LOCKFILE_NAME);
+    let lockfile_path = install_paths.config_root.join(LOCKFILE_NAME);
     let existing_lockfile = if lockfile_path.exists() {
         Some(if sync_mode.checks_lockfile() {
             Lockfile::read(&lockfile_path)?
@@ -373,14 +395,17 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         bail!(
             "`--frozen` requires an existing {} in {}",
             LOCKFILE_NAME,
-            cwd.display()
+            install_paths.config_root.display()
         );
     }
 
     loop {
-        reporter.status("Resolving", format!("package graph in {}", cwd.display()))?;
+        reporter.status(
+            "Resolving",
+            format!("package graph in {}", install_paths.config_root.display()),
+        )?;
         let resolution = resolve_project(
-            cwd,
+            &install_paths.config_root,
             cache_root,
             ResolveMode::Sync,
             reporter,
@@ -414,18 +439,23 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             .collect::<Result<Vec<_>>>()?;
         let selected_adapters = Adapters::from_slice(&selection.adapters);
         let output_plan = build_output_plan(
-            cwd,
+            &install_paths.runtime_root,
             &package_snapshots,
             selected_adapters,
             existing_lockfile.as_ref(),
             true,
         )?;
         let planned_files = &output_plan.files;
-        let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
-        let lockfile = resolution.to_lockfile(selected_adapters)?;
-        let mut owned_paths = load_owned_paths(cwd, existing_lockfile.as_ref())?;
+        let desired_paths =
+            resolution.managed_paths(&install_paths.runtime_root, selected_adapters)?;
+        let lockfile = resolution.to_lockfile(selected_adapters, &install_paths.runtime_root)?;
+        let mut owned_paths =
+            load_owned_paths(&install_paths.runtime_root, existing_lockfile.as_ref())?;
         if existing_lockfile.is_none() {
-            owned_paths.extend(recover_runtime_owned_paths(cwd, &desired_paths));
+            owned_paths.extend(recover_runtime_owned_paths(
+                &install_paths.runtime_root,
+                &desired_paths,
+            ));
         }
         owned_paths.extend(adopted_owned_paths.iter().cloned());
 
@@ -435,7 +465,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
                     "{} requires an existing {} in {}",
                     sync_mode.flag(),
                     LOCKFILE_NAME,
-                    cwd.display()
+                    install_paths.config_root.display()
                 );
             };
             if *existing != lockfile {
@@ -444,11 +474,13 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         }
 
         if let Some(unmanaged_collision) =
-            find_unmanaged_collision(planned_files, &owned_paths, cwd)
+            find_unmanaged_collision(planned_files, &owned_paths, &install_paths.runtime_root)
         {
-            let Some(managed_collision) =
-                find_managed_collision(cwd, &resolution, &unmanaged_collision)
-            else {
+            let Some(managed_collision) = find_managed_collision(
+                &install_paths.runtime_root,
+                &resolution,
+                &unmanaged_collision,
+            ) else {
                 bail!(
                     "refusing to overwrite unmanaged file {}",
                     display_path(&unmanaged_collision.path)
@@ -457,12 +489,18 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             let Some(resolver) = collision_resolver.as_deref_mut() else {
                 bail!(
                     "{}",
-                    unmanaged_collision_guidance(cwd, &managed_collision, sync_mode)
+                    unmanaged_collision_guidance(
+                        &install_paths.runtime_root,
+                        &managed_collision,
+                        sync_mode,
+                    )
                 );
             };
-            match resolver.resolve(cwd, &managed_collision)? {
+            match resolver.resolve(&install_paths.runtime_root, &managed_collision)? {
                 ManagedCollisionChoice::Adopt => {
-                    let ownership_root = cwd.join(&managed_collision.ownership_root);
+                    let ownership_root = install_paths
+                        .runtime_root
+                        .join(&managed_collision.ownership_root);
                     reporter.note(format!(
                         "adopting managed target {}",
                         display_path(&ownership_root)
@@ -493,7 +531,11 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
                     bail!(
                         "cancelled {} because managed target {} collides with existing unmanaged path {}",
                         sync_mode.flag(),
-                        display_path(&cwd.join(&managed_collision.ownership_root)),
+                        display_path(
+                            &install_paths
+                                .runtime_root
+                                .join(&managed_collision.ownership_root),
+                        ),
                         display_path(&managed_collision.collision_path)
                     );
                 }
@@ -505,6 +547,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             &root,
             &lockfile_path,
             &lockfile,
+            &install_paths.runtime_root,
             &owned_paths,
             &desired_paths,
             planned_files,
@@ -539,8 +582,34 @@ pub(crate) fn sync_in_dir_with_loaded_root(
     root: LoadedManifest,
     reporter: &Reporter,
 ) -> Result<SyncSummary> {
+    let install_paths = InstallPaths::project(cwd);
+    sync_with_loaded_root_at_paths(
+        &install_paths,
+        cache_root,
+        locked,
+        allow_high_sensitivity,
+        adapters,
+        sync_on_launch,
+        execution_mode,
+        root,
+        reporter,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sync_with_loaded_root_at_paths(
+    install_paths: &InstallPaths,
+    cache_root: &Path,
+    locked: bool,
+    allow_high_sensitivity: bool,
+    adapters: &[Adapter],
+    sync_on_launch: bool,
+    execution_mode: ExecutionMode,
+    root: LoadedManifest,
+    reporter: &Reporter,
+) -> Result<SyncSummary> {
     sync_in_dir_with_adapters_mode(
-        cwd,
+        install_paths,
         cache_root,
         if locked {
             SyncMode::Locked
@@ -595,7 +664,11 @@ pub fn resolve_project_from_existing_lockfile_in_dir(
 }
 
 impl Resolution {
-    pub fn to_lockfile(&self, selected_adapters: Adapters) -> Result<Lockfile> {
+    pub fn to_lockfile(
+        &self,
+        selected_adapters: Adapters,
+        runtime_root: &Path,
+    ) -> Result<Lockfile> {
         let mut packages = Vec::new();
 
         for package in &self.packages {
@@ -705,33 +778,33 @@ impl Resolution {
 
         Ok(Lockfile::new(
             packages,
-            self.lockfile_managed_files(selected_adapters)?,
+            self.lockfile_managed_files(selected_adapters, runtime_root)?,
         ))
     }
 
     pub fn managed_paths(
         &self,
-        project_root: &Path,
+        runtime_root: &Path,
         selected_adapters: Adapters,
     ) -> Result<HashSet<PathBuf>> {
-        let lockfile = self.to_lockfile(selected_adapters)?;
-        lockfile.managed_paths(project_root)
+        let lockfile = self.to_lockfile(selected_adapters, runtime_root)?;
+        lockfile.managed_paths(runtime_root)
     }
 
-    fn lockfile_managed_files(&self, selected_adapters: Adapters) -> Result<Vec<String>> {
+    fn lockfile_managed_files(
+        &self,
+        selected_adapters: Adapters,
+        runtime_root: &Path,
+    ) -> Result<Vec<String>> {
         let package_roots = self
             .packages
             .iter()
             .map(|package| (package.clone(), package.root.clone()))
             .collect::<Vec<_>>();
-        Ok(build_output_plan(
-            &self.project_root,
-            &package_roots,
-            selected_adapters,
-            None,
-            false,
-        )?
-        .managed_files)
+        Ok(
+            build_output_plan(runtime_root, &package_roots, selected_adapters, None, false)?
+                .managed_files,
+        )
     }
 }
 

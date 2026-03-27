@@ -169,6 +169,18 @@ Start tools with automatic sync:
 nodus add owner/repo --adapter codex --sync-on-launch
 ```
 
+Install globally into all detected supported home-scoped agent roots:
+
+```bash
+nodus add owner/repo --global
+```
+
+Install globally into an explicit home-scoped agent root:
+
+```bash
+nodus add owner/repo --global --adapter codex
+```
+
 Preview changes without writing them:
 
 ```bash
@@ -216,6 +228,12 @@ Remove a dependency:
 nodus remove nodus
 ```
 
+Remove a global dependency:
+
+```bash
+nodus remove nodus --global
+```
+
 Check that your manifest, lockfile, store, and managed files are consistent:
 
 ```bash
@@ -247,6 +265,21 @@ Windows: %LOCALAPPDATA%\nodus\
 ```
 
 Override that location for any command with `--store-path <path>`.
+
+Global installs keep their `nodus.toml` and `nodus.lock` under `<store-path>/global/` and
+write managed runtime files into your home-scoped agent folders such as `~/.codex`,
+`~/.claude`, `~/.cursor`, `~/.opencode`, and `~/.agents`.
+
+Global installs support these adapters:
+
+- `agents`
+- `claude`
+- `codex`
+- `cursor`
+- `opencode`
+
+Global installs do not support `copilot`, and `--global` cannot be combined with
+`--sync-on-launch`.
 
 Install a specific release with the Unix installer script:
 

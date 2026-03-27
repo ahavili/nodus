@@ -24,8 +24,16 @@ pub struct AdapterSelection {
     pub should_persist: bool,
 }
 
+const GLOBAL_SUPPORTED_ADAPTERS: [Adapter; 5] = [
+    Adapter::Agents,
+    Adapter::Claude,
+    Adapter::Codex,
+    Adapter::Cursor,
+    Adapter::OpenCode,
+];
+
 pub fn resolve_adapter_selection(
-    project_root: &Path,
+    detection_root: &Path,
     manifest: &Manifest,
     explicit: &[Adapter],
     allow_prompt: bool,
@@ -47,7 +55,7 @@ pub fn resolve_adapter_selection(
         });
     }
 
-    let detected = detect_repo_adapters(project_root);
+    let detected = detect_repo_adapters(detection_root);
     if !detected.is_empty() {
         return Ok(AdapterSelection {
             adapters: detected.to_vec(),
@@ -58,7 +66,7 @@ pub fn resolve_adapter_selection(
 
     if allow_prompt {
         return Ok(AdapterSelection {
-            adapters: vec![prompt_for_adapter(project_root)?],
+            adapters: vec![prompt_for_adapter(detection_root)?],
             source: AdapterSelectionSource::Prompt,
             should_persist: true,
         });
@@ -66,7 +74,51 @@ pub fn resolve_adapter_selection(
 
     bail!(
         "no adapter configuration found in {}. Pass `--adapter <agents|claude|codex|copilot|cursor|opencode>` or configure `[adapters] enabled = [...]` in nodus.toml",
-        project_root.display()
+        detection_root.display()
+    );
+}
+
+pub fn resolve_global_adapter_selection(
+    detection_root: &Path,
+    manifest: &Manifest,
+    explicit: &[Adapter],
+) -> Result<AdapterSelection> {
+    if !explicit.is_empty() {
+        let adapters = normalize_adapters(explicit);
+        ensure_global_supported(&adapters)?;
+        return Ok(AdapterSelection {
+            adapters,
+            source: AdapterSelectionSource::Cli,
+            should_persist: true,
+        });
+    }
+
+    if let Some(enabled) = manifest.enabled_adapters() {
+        let adapters = normalize_adapters(enabled);
+        ensure_global_supported(&adapters)?;
+        return Ok(AdapterSelection {
+            adapters,
+            source: AdapterSelectionSource::Manifest,
+            should_persist: false,
+        });
+    }
+
+    let detected = detect_repo_adapters(detection_root)
+        .to_vec()
+        .into_iter()
+        .filter(|adapter| is_global_supported(*adapter))
+        .collect::<Vec<_>>();
+    if !detected.is_empty() {
+        return Ok(AdapterSelection {
+            adapters: detected,
+            source: AdapterSelectionSource::Detected,
+            should_persist: true,
+        });
+    }
+
+    bail!(
+        "no supported global adapters found in {}. Pass `--adapter <agents|claude|codex|cursor|opencode>` explicitly or create one of ~/.agents, ~/.claude, ~/.codex, ~/.cursor, or ~/.opencode",
+        detection_root.display()
     );
 }
 
@@ -106,6 +158,27 @@ fn normalize_adapters(adapters: &[Adapter]) -> Vec<Adapter> {
     adapters.sort();
     adapters.dedup();
     adapters
+}
+
+fn ensure_global_supported(adapters: &[Adapter]) -> Result<()> {
+    let unsupported = adapters
+        .iter()
+        .copied()
+        .filter(|adapter| !is_global_supported(*adapter))
+        .map(Adapter::as_str)
+        .collect::<Vec<_>>();
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+
+    bail!(
+        "global installs do not support adapters [{}]; use `agents`, `claude`, `codex`, `cursor`, or `opencode`",
+        unsupported.join(", ")
+    );
+}
+
+fn is_global_supported(adapter: Adapter) -> bool {
+    GLOBAL_SUPPORTED_ADAPTERS.contains(&adapter)
 }
 
 fn prompt_for_adapter(project_root: &Path) -> Result<Adapter> {
@@ -208,6 +281,53 @@ mod tests {
         assert!(detected.contains(Adapter::OpenCode));
         assert!(!detected.contains(Adapter::Codex));
         assert!(!detected.contains(Adapter::Agents));
+    }
+
+    #[test]
+    fn resolve_global_selection_detects_all_supported_home_roots() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".codex")).unwrap();
+        fs::create_dir_all(temp.path().join(".claude")).unwrap();
+        fs::create_dir_all(temp.path().join(".github/skills")).unwrap();
+
+        let selection =
+            resolve_global_adapter_selection(temp.path(), &Manifest::default(), &[]).unwrap();
+
+        assert_eq!(selection.source, AdapterSelectionSource::Detected);
+        assert_eq!(selection.adapters, vec![Adapter::Claude, Adapter::Codex]);
+        assert!(selection.should_persist);
+    }
+
+    #[test]
+    fn resolve_global_selection_rejects_unsupported_explicit_adapters() {
+        let temp = TempDir::new().unwrap();
+
+        let error = resolve_global_adapter_selection(
+            temp.path(),
+            &Manifest::default(),
+            &[Adapter::Copilot],
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("global installs do not support adapters [copilot]"));
+    }
+
+    #[test]
+    fn resolve_global_selection_rejects_unsupported_persisted_adapters() {
+        let temp = TempDir::new().unwrap();
+        let manifest = Manifest {
+            adapters: Some(crate::manifest::AdapterConfig {
+                enabled: vec![Adapter::Copilot],
+            }),
+            ..Manifest::default()
+        };
+
+        let error = resolve_global_adapter_selection(temp.path(), &manifest, &[])
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("global installs do not support adapters [copilot]"));
     }
 
     #[test]

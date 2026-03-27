@@ -8,14 +8,18 @@ use sha2::{Digest, Sha256};
 
 use crate::adapters::Adapter;
 use crate::execution::ExecutionMode;
+use crate::install_paths::InstallPaths;
 use crate::manifest::{
     DependencyComponent, DependencyKind, DependencySpec, MANIFEST_FILE, Manifest, PackageRole,
-    RequestedGitRef, load_dependency_from_dir, load_from_dir, normalize_dependency_alias,
+    RequestedGitRef, load_dependency_from_dir, load_root_from_dir_allow_missing,
+    normalize_dependency_alias,
 };
 use crate::paths::display_path;
 use crate::report::Reporter;
-use crate::resolver::sync_in_dir_with_loaded_root;
-use crate::selection::{resolve_adapter_selection, should_prompt_for_adapter};
+use crate::resolver::sync_with_loaded_root_at_paths;
+use crate::selection::{
+    resolve_adapter_selection, resolve_global_adapter_selection, should_prompt_for_adapter,
+};
 
 #[derive(Debug, Clone)]
 pub struct GitCheckout {
@@ -61,6 +65,7 @@ impl GitCheckout {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn add_dependency_in_dir_with_adapters(
     project_root: &Path,
     cache_root: &Path,
@@ -68,8 +73,9 @@ pub fn add_dependency_in_dir_with_adapters(
     options: AddDependencyOptions<'_>,
     reporter: &Reporter,
 ) -> Result<AddSummary> {
-    add_dependency_in_dir_with_adapters_mode(
-        project_root,
+    let install_paths = InstallPaths::project(project_root);
+    add_dependency_at_paths_with_adapters_mode(
+        &install_paths,
         cache_root,
         url,
         options,
@@ -78,6 +84,7 @@ pub fn add_dependency_in_dir_with_adapters(
     )
 }
 
+#[allow(dead_code)]
 pub fn add_dependency_in_dir_with_adapters_dry_run(
     project_root: &Path,
     cache_root: &Path,
@@ -85,8 +92,9 @@ pub fn add_dependency_in_dir_with_adapters_dry_run(
     options: AddDependencyOptions<'_>,
     reporter: &Reporter,
 ) -> Result<AddSummary> {
-    add_dependency_in_dir_with_adapters_mode(
-        project_root,
+    let install_paths = InstallPaths::project(project_root);
+    add_dependency_at_paths_with_adapters_mode(
+        &install_paths,
         cache_root,
         url,
         options,
@@ -95,8 +103,42 @@ pub fn add_dependency_in_dir_with_adapters_dry_run(
     )
 }
 
-fn add_dependency_in_dir_with_adapters_mode(
-    project_root: &Path,
+pub fn add_dependency_at_paths_with_adapters(
+    install_paths: &InstallPaths,
+    cache_root: &Path,
+    url: &str,
+    options: AddDependencyOptions<'_>,
+    reporter: &Reporter,
+) -> Result<AddSummary> {
+    add_dependency_at_paths_with_adapters_mode(
+        install_paths,
+        cache_root,
+        url,
+        options,
+        ExecutionMode::Apply,
+        reporter,
+    )
+}
+
+pub fn add_dependency_at_paths_with_adapters_dry_run(
+    install_paths: &InstallPaths,
+    cache_root: &Path,
+    url: &str,
+    options: AddDependencyOptions<'_>,
+    reporter: &Reporter,
+) -> Result<AddSummary> {
+    add_dependency_at_paths_with_adapters_mode(
+        install_paths,
+        cache_root,
+        url,
+        options,
+        ExecutionMode::DryRun,
+        reporter,
+    )
+}
+
+fn add_dependency_at_paths_with_adapters_mode(
+    install_paths: &InstallPaths,
     cache_root: &Path,
     url: &str,
     options: AddDependencyOptions<'_>,
@@ -111,11 +153,11 @@ fn add_dependency_in_dir_with_adapters_mode(
     load_dependency_from_dir(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
 
-    let mut root = load_from_dir(project_root, PackageRole::Root)?;
+    let mut root = load_root_from_dir_allow_missing(&install_paths.config_root)?;
     if root.manifest.contains_dependency_alias(&alias) {
         bail!(
             "dependency `{alias}` already exists in {}",
-            project_root.display()
+            install_paths.config_root.display()
         );
     }
     reporter.status(
@@ -123,7 +165,7 @@ fn add_dependency_in_dir_with_adapters_mode(
         format!(
             "{alias} {} to {}",
             checkout.reference_display(),
-            project_root.join(MANIFEST_FILE).display()
+            install_paths.config_root.join(MANIFEST_FILE).display()
         ),
     )?;
     root.manifest.dependency_section_mut(options.kind).insert(
@@ -153,12 +195,23 @@ fn add_dependency_in_dir_with_adapters_mode(
             enabled: true,
         },
     );
-    let selection = resolve_adapter_selection(
-        project_root,
-        &root.manifest,
-        options.adapters,
-        should_prompt_for_adapter(),
-    )?;
+    let selection = if install_paths.is_global() {
+        if options.sync_on_launch {
+            bail!("`nodus add --global` does not support `--sync-on-launch`");
+        }
+        resolve_global_adapter_selection(
+            &install_paths.adapter_detection_root,
+            &root.manifest,
+            options.adapters,
+        )?
+    } else {
+        resolve_adapter_selection(
+            &install_paths.adapter_detection_root,
+            &root.manifest,
+            options.adapters,
+            should_prompt_for_adapter(),
+        )?
+    };
     if selection.should_persist {
         root.manifest.set_enabled_adapters(&selection.adapters);
     }
@@ -166,8 +219,8 @@ fn add_dependency_in_dir_with_adapters_mode(
         root.manifest.set_sync_on_launch(true);
     }
     let root = root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
-    let sync_summary = sync_in_dir_with_loaded_root(
-        project_root,
+    let sync_summary = sync_with_loaded_root_at_paths(
+        install_paths,
         cache_root,
         false,
         false,
@@ -187,14 +240,16 @@ fn add_dependency_in_dir_with_adapters_mode(
     })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn remove_dependency_in_dir(
     project_root: &Path,
     cache_root: &Path,
     package: &str,
     reporter: &Reporter,
 ) -> Result<RemoveSummary> {
-    remove_dependency_in_dir_mode(
-        project_root,
+    let install_paths = InstallPaths::project(project_root);
+    remove_dependency_at_paths_mode(
+        &install_paths,
         cache_root,
         package,
         ExecutionMode::Apply,
@@ -202,14 +257,16 @@ pub fn remove_dependency_in_dir(
     )
 }
 
+#[allow(dead_code)]
 pub fn remove_dependency_in_dir_dry_run(
     project_root: &Path,
     cache_root: &Path,
     package: &str,
     reporter: &Reporter,
 ) -> Result<RemoveSummary> {
-    remove_dependency_in_dir_mode(
-        project_root,
+    let install_paths = InstallPaths::project(project_root);
+    remove_dependency_at_paths_mode(
+        &install_paths,
         cache_root,
         package,
         ExecutionMode::DryRun,
@@ -217,15 +274,47 @@ pub fn remove_dependency_in_dir_dry_run(
     )
 }
 
-fn remove_dependency_in_dir_mode(
-    project_root: &Path,
+pub fn remove_dependency_at_paths(
+    install_paths: &InstallPaths,
+    cache_root: &Path,
+    package: &str,
+    reporter: &Reporter,
+) -> Result<RemoveSummary> {
+    remove_dependency_at_paths_mode(
+        install_paths,
+        cache_root,
+        package,
+        ExecutionMode::Apply,
+        reporter,
+    )
+}
+
+pub fn remove_dependency_at_paths_dry_run(
+    install_paths: &InstallPaths,
+    cache_root: &Path,
+    package: &str,
+    reporter: &Reporter,
+) -> Result<RemoveSummary> {
+    remove_dependency_at_paths_mode(
+        install_paths,
+        cache_root,
+        package,
+        ExecutionMode::DryRun,
+        reporter,
+    )
+}
+
+fn remove_dependency_at_paths_mode(
+    install_paths: &InstallPaths,
     cache_root: &Path,
     package: &str,
     execution_mode: ExecutionMode,
     reporter: &Reporter,
 ) -> Result<RemoveSummary> {
-    crate::relay::ensure_no_pending_relay_edits_in_dir(project_root, cache_root)?;
-    let mut root = load_from_dir(project_root, PackageRole::Root)?;
+    if !install_paths.is_global() {
+        crate::relay::ensure_no_pending_relay_edits_in_dir(&install_paths.config_root, cache_root)?;
+    }
+    let mut root = load_root_from_dir_allow_missing(&install_paths.config_root)?;
     let alias = resolve_dependency_alias(&root.manifest, package)?;
     let kind = root
         .manifest
@@ -235,13 +324,13 @@ fn remove_dependency_in_dir_mode(
         "Removing",
         format!(
             "{alias} from {}",
-            project_root.join(MANIFEST_FILE).display()
+            install_paths.config_root.join(MANIFEST_FILE).display()
         ),
     )?;
     root.manifest.dependency_section_mut(kind).remove(&alias);
     let root = root.with_manifest(root.manifest.clone(), PackageRole::Root)?;
-    let sync_summary = sync_in_dir_with_loaded_root(
-        project_root,
+    let sync_summary = sync_with_loaded_root_at_paths(
+        install_paths,
         cache_root,
         false,
         false,

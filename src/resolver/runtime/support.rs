@@ -27,6 +27,7 @@ pub(super) fn build_sync_execution_plan(
     working_root: &LoadedManifest,
     lockfile_path: &Path,
     lockfile: &Lockfile,
+    runtime_root: &Path,
     owned_paths: &HashSet<PathBuf>,
     desired_paths: &HashSet<PathBuf>,
     planned_files: &[ManagedFile],
@@ -50,7 +51,7 @@ pub(super) fn build_sync_execution_plan(
     };
 
     Ok(SyncExecutionPlan {
-        project_root: working_root.root.clone(),
+        runtime_root: runtime_root.to_path_buf(),
         owned_paths: owned_paths.clone(),
         desired_paths: desired_paths.clone(),
         manifest_write,
@@ -93,11 +94,11 @@ pub(super) fn execute_sync_plan(
             reporter.status("Writing", write.path.display())?;
             write_atomic(&write.path, &write.contents)?;
         }
-        prune_stale_files(&plan.owned_paths, &plan.desired_paths, &plan.project_root)?;
+        prune_stale_files(&plan.owned_paths, &plan.desired_paths, &plan.runtime_root)?;
         prepare_managed_paths_for_write(
             &plan.managed_writes,
             &plan.owned_paths,
-            &plan.project_root,
+            &plan.runtime_root,
         )?;
         reporter.status("Writing", "managed runtime outputs")?;
         write_managed_files(&plan.managed_writes)?;
@@ -287,7 +288,7 @@ pub(super) fn doctor_in_dir(
     )?;
     let planned_files = &output_plan.files;
     let desired_paths = resolution.managed_paths(cwd, selected_adapters)?;
-    let expected_lockfile = resolution.to_lockfile(selected_adapters)?;
+    let expected_lockfile = resolution.to_lockfile(selected_adapters, cwd)?;
     if existing_lockfile != expected_lockfile {
         bail!("{}", super::lockfile_out_of_date_message());
     }

@@ -128,6 +128,18 @@ fn parses_remove_subcommand() {
 }
 
 #[test]
+fn parses_global_add_and_remove_flags() {
+    let add = Cli::try_parse_from(["nodus", "add", "example/repo", "--global"]).unwrap();
+    let remove = Cli::try_parse_from(["nodus", "remove", "example/repo", "--global"]).unwrap();
+
+    assert!(matches!(add.command, Command::Add { global: true, .. }));
+    assert!(matches!(
+        remove.command,
+        Command::Remove { global: true, .. }
+    ));
+}
+
+#[test]
 fn parses_list_subcommand() {
     let cli = Cli::try_parse_from(["nodus", "list"]).unwrap();
 
@@ -438,7 +450,8 @@ fn add_help_describes_arguments() {
     assert!(help.contains("Pin a specific Git tag instead of resolving the latest tag"));
     assert!(help.contains("Track a specific Git branch instead of resolving the latest tag"));
     assert!(help.contains("Pin a specific Git commit revision"));
-    assert!(help.contains("Select one or more adapters to persist for this repository"));
+    assert!(help.contains("Install into user-level global state"));
+    assert!(help.contains("Select one or more adapters to persist for this install target"));
     assert!(help.contains("Select which dependency components to install from the package"));
     assert!(help.contains("Persist project startup hooks"));
 }
@@ -524,6 +537,7 @@ fn list_command_emits_json_with_locked_metadata() {
     run_command_in_dir(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
@@ -632,6 +646,7 @@ fn list_command_emits_version_requested_ref_for_semver_dependencies() {
     run_command_in_dir(
         Command::Add {
             url: repo.path().to_string_lossy().to_string(),
+            global: false,
             dev: false,
             tag: None,
             branch: None,
@@ -900,6 +915,7 @@ fn add_command_emits_resolving_and_adding_lines() {
     let output = run_command_output(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: None,
             branch: None,
@@ -941,6 +957,7 @@ fn info_command_renders_version_requirement_for_semver_dependencies() {
     run_command_in_dir(
         Command::Add {
             url: repo.path().to_string_lossy().to_string(),
+            global: false,
             dev: false,
             tag: None,
             branch: None,
@@ -989,6 +1006,7 @@ fn add_dry_run_previews_without_writing_project_files() {
     let output = run_command_output(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: None,
             branch: None,
@@ -1131,6 +1149,7 @@ fn outdated_command_emits_json_without_status_lines() {
     run_command_in_dir(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
@@ -1175,6 +1194,7 @@ fn update_command_emits_updating_and_finished_lines() {
     run_command_in_dir(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
@@ -1214,6 +1234,7 @@ fn remove_dry_run_keeps_manifest_and_lockfile_unchanged() {
     run_command_in_dir(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: None,
             branch: None,
@@ -1244,6 +1265,7 @@ fn remove_dry_run_keeps_manifest_and_lockfile_unchanged() {
     let output = run_command_output(
         Command::Remove {
             package: alias,
+            global: false,
             dry_run: true,
         },
         temp.path(),
@@ -1270,6 +1292,7 @@ fn update_dry_run_keeps_manifest_and_lockfile_unchanged() {
     run_command_in_dir(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: Some("v0.1.0".into()),
             branch: None,
@@ -1329,6 +1352,7 @@ fn sync_dry_run_locked_and_frozen_leave_state_unchanged() {
     run_command_in_dir(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: None,
             branch: None,
@@ -1405,6 +1429,7 @@ fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
     run_command_in_dir(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: None,
             branch: None,
@@ -1477,6 +1502,7 @@ fn relay_dry_run_previews_state_only_local_config_changes() {
     run_command_in_dir(
         Command::Add {
             url,
+            global: false,
             dev: false,
             tag: None,
             branch: None,
@@ -1620,6 +1646,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
     run_command_in_dir(
         Command::Add {
             url: url_one,
+            global: false,
             dev: false,
             tag: None,
             branch: None,
@@ -1646,6 +1673,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
     run_command_in_dir(
         Command::Add {
             url: url_two,
+            global: false,
             dev: false,
             tag: Some("v0.2.0".into()),
             branch: None,

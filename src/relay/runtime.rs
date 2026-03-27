@@ -336,7 +336,6 @@ fn load_workspace_if_linked(
             project_root: project_root.to_path_buf(),
             selected_adapters: Adapters::NONE,
             resolution: crate::resolver::Resolution {
-                project_root: project_root.to_path_buf(),
                 packages: Vec::new(),
                 warnings: Vec::new(),
             },

@@ -19,6 +19,7 @@ pub(super) fn run_command_in_dir(
     match command {
         Command::Add {
             url,
+            global,
             dev,
             tag,
             branch,
@@ -32,6 +33,7 @@ pub(super) fn run_command_in_dir(
             &context,
             dependency::AddCommand {
                 url,
+                global,
                 dev,
                 tag,
                 branch,
@@ -43,9 +45,11 @@ pub(super) fn run_command_in_dir(
                 dry_run,
             },
         ),
-        Command::Remove { package, dry_run } => {
-            dependency::handle_remove(&context, package, dry_run)
-        }
+        Command::Remove {
+            package,
+            global,
+            dry_run,
+        } => dependency::handle_remove(&context, package, global, dry_run),
         Command::List { json } => query::handle_list(&context, json),
         Command::Info {
             package,

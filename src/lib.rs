@@ -6,6 +6,7 @@ pub(crate) mod domain;
 pub(crate) mod execution;
 pub(crate) mod git;
 pub(crate) mod info;
+pub(crate) mod install_paths;
 pub(crate) mod list;
 pub(crate) mod local_config;
 pub(crate) mod lockfile;

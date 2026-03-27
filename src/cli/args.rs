@@ -35,6 +35,11 @@ pub(super) enum Command {
         url: String,
         #[arg(
             long,
+            help = "Install into user-level global state and home-scoped agent folders instead of the current repository"
+        )]
+        global: bool,
+        #[arg(
+            long,
             help = "Record the dependency under `[dev-dependencies]` instead of `[dependencies]`"
         )]
         dev: bool,
@@ -65,7 +70,7 @@ pub(super) enum Command {
         #[arg(
             long,
             value_enum,
-            help = "Select one or more adapters to persist for this repository"
+            help = "Select one or more adapters to persist for this install target"
         )]
         adapter: Vec<Adapter>,
         #[arg(
@@ -89,6 +94,11 @@ pub(super) enum Command {
     Remove {
         #[arg(help = "Dependency alias or repository reference to remove")]
         package: String,
+        #[arg(
+            long,
+            help = "Remove from user-level global state and home-scoped agent folders instead of the current repository"
+        )]
+        global: bool,
         #[arg(
             long = "dry-run",
             help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"

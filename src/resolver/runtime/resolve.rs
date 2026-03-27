@@ -83,9 +83,12 @@ pub(super) fn resolve_project(
     frozen_lockfile: Option<&Lockfile>,
     root_override: Option<&LoadedManifest>,
 ) -> Result<Resolution> {
-    let project_root = root
-        .canonicalize()
-        .with_context(|| format!("failed to access {}", root.display()))?;
+    let project_root = if let Some(root_override) = root_override {
+        root_override.root.clone()
+    } else {
+        root.canonicalize()
+            .with_context(|| format!("failed to access {}", root.display()))?
+    };
     let context = ResolveContext {
         cache_root,
         mode,
@@ -98,7 +101,7 @@ pub(super) fn resolve_project(
         &context,
         ResolvePackageInput {
             alias: "root".to_string(),
-            package_root: project_root.clone(),
+            package_root: project_root,
             source: PackageSource::Root,
             role: PackageRole::Root,
             selected_components: None,
@@ -120,11 +123,7 @@ pub(super) fn resolve_project(
         .flat_map(|package| package.manifest.warnings.iter().cloned())
         .collect();
 
-    Ok(Resolution {
-        project_root,
-        packages,
-        warnings,
-    })
+    Ok(Resolution { packages, warnings })
 }
 
 fn resolve_package(

@@ -7,11 +7,13 @@ use tempfile::TempDir;
 use super::*;
 use crate::adapters::{Adapter, Adapters, namespaced_file_name, namespaced_skill_id};
 use crate::git::{
-    AddDependencyOptions, AddSummary, RemoveSummary,
+    AddDependencyOptions, AddSummary, RemoveSummary, add_dependency_at_paths_with_adapters,
     add_dependency_in_dir_with_adapters as add_dependency_in_dir_with_adapters_impl,
-    normalize_alias_from_url, remove_dependency_in_dir as remove_dependency_in_dir_impl,
-    shared_checkout_path, shared_repository_path,
+    normalize_alias_from_url, remove_dependency_at_paths,
+    remove_dependency_in_dir as remove_dependency_in_dir_impl, shared_checkout_path,
+    shared_repository_path,
 };
+use crate::install_paths::InstallPaths;
 use crate::manifest::{
     DependencyComponent, DependencyKind, MANIFEST_FILE, RequestedGitRef, load_root_from_dir,
 };
@@ -276,8 +278,9 @@ fn sync_in_dir_with_collision_choice(
 ) -> Result<SyncSummary> {
     let reporter = Reporter::silent();
     let mut resolver = StubManagedCollisionResolver { choice };
+    let install_paths = InstallPaths::project(cwd);
     super::sync_in_dir_with_adapters_mode_and_collision_resolution(
-        cwd,
+        &install_paths,
         cache_root,
         SyncMode::Normal,
         false,
@@ -420,7 +423,7 @@ shared = { path = "vendor/shared" }
 
     let resolution = resolve_project(temp.path(), cache.path(), ResolveMode::Sync).unwrap();
     let lockfile = resolution
-        .to_lockfile(Adapters::from_slice(&Adapter::ALL))
+        .to_lockfile(Adapters::from_slice(&Adapter::ALL), temp.path())
         .unwrap();
 
     assert_eq!(lockfile.packages.len(), 2);
@@ -1107,7 +1110,7 @@ tooling = { path = "vendor/tooling" }
             .any(|package| package.alias == "tooling")
     );
     let lockfile = resolution
-        .to_lockfile(Adapters::from_slice(&Adapter::ALL))
+        .to_lockfile(Adapters::from_slice(&Adapter::ALL), temp.path())
         .unwrap();
     let root_package = lockfile
         .packages
@@ -1166,7 +1169,7 @@ tooling = { path = "vendor/tooling" }
             .any(|package| package.alias == "tooling")
     );
     let lockfile = resolution
-        .to_lockfile(Adapters::from_slice(&Adapter::ALL))
+        .to_lockfile(Adapters::from_slice(&Adapter::ALL), temp.path())
         .unwrap();
     let wrapper_package = lockfile
         .packages
@@ -1241,6 +1244,198 @@ fn remove_dependency_rejects_unknown_package() {
         .to_string();
 
     assert!(error.contains("dependency `missing` does not exist"));
+}
+
+#[test]
+fn global_add_installs_to_all_detected_supported_adapters() {
+    let store = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let (_repo, url) = create_git_dependency();
+    fs::create_dir_all(home.path().join(".codex")).unwrap();
+    fs::create_dir_all(home.path().join(".claude")).unwrap();
+    fs::create_dir_all(home.path().join(".github/skills")).unwrap();
+
+    let reporter = Reporter::silent();
+    let install_paths = InstallPaths::new(
+        InstallScope::Global,
+        store.path().join("global"),
+        home.path().to_path_buf(),
+        home.path().to_path_buf(),
+    );
+    let summary = add_dependency_at_paths_with_adapters(
+        &install_paths,
+        cache.path(),
+        &url,
+        AddDependencyOptions {
+            git_ref: None,
+            version_req: None,
+            kind: DependencyKind::Dependency,
+            adapters: &[],
+            components: &[],
+            sync_on_launch: false,
+        },
+        &reporter,
+    )
+    .unwrap();
+
+    assert_eq!(summary.adapters, vec![Adapter::Claude, Adapter::Codex]);
+    let global_root = store.path().join("global");
+    assert!(global_root.join(MANIFEST_FILE).exists());
+    assert!(global_root.join(LOCKFILE_NAME).exists());
+
+    let manifest = load_root_from_dir(&global_root).unwrap();
+    assert_eq!(
+        manifest.manifest.enabled_adapters().unwrap(),
+        [Adapter::Claude, Adapter::Codex]
+    );
+    let dependency = resolve_project(&global_root, cache.path(), ResolveMode::Sync)
+        .unwrap()
+        .packages
+        .into_iter()
+        .find(|package| package.alias != "root")
+        .unwrap();
+    let managed_skill_id = namespaced_skill_id(&dependency, "review");
+
+    assert!(
+        home.path()
+            .join(format!(".claude/skills/{managed_skill_id}/SKILL.md"))
+            .exists()
+    );
+    assert!(
+        home.path()
+            .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"))
+            .exists()
+    );
+    assert!(
+        !home
+            .path()
+            .join(".github/skills")
+            .join(&managed_skill_id)
+            .exists()
+    );
+}
+
+#[test]
+fn global_remove_prunes_home_scoped_outputs() {
+    let store = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let (_repo, url) = create_git_dependency();
+    fs::create_dir_all(home.path().join(".codex")).unwrap();
+
+    let reporter = Reporter::silent();
+    let install_paths = InstallPaths::new(
+        InstallScope::Global,
+        store.path().join("global"),
+        home.path().to_path_buf(),
+        home.path().to_path_buf(),
+    );
+    add_dependency_at_paths_with_adapters(
+        &install_paths,
+        cache.path(),
+        &url,
+        AddDependencyOptions {
+            git_ref: None,
+            version_req: None,
+            kind: DependencyKind::Dependency,
+            adapters: &[],
+            components: &[],
+            sync_on_launch: false,
+        },
+        &reporter,
+    )
+    .unwrap();
+
+    let global_root = store.path().join("global");
+    let dependency = resolve_project(&global_root, cache.path(), ResolveMode::Sync)
+        .unwrap()
+        .packages
+        .into_iter()
+        .find(|package| package.alias != "root")
+        .unwrap();
+    let managed_skill_id = namespaced_skill_id(&dependency, "review");
+    let managed_skill = home
+        .path()
+        .join(format!(".codex/skills/{managed_skill_id}/SKILL.md"));
+    assert!(managed_skill.exists());
+
+    let alias = normalize_alias_from_url(&url).unwrap();
+    remove_dependency_at_paths(&install_paths, cache.path(), &alias, &reporter).unwrap();
+
+    let manifest = load_root_from_dir(&global_root).unwrap();
+    assert!(manifest.manifest.dependencies.is_empty());
+    assert!(!managed_skill.exists());
+}
+
+#[test]
+fn global_add_requires_supported_detected_adapters_when_none_are_explicit() {
+    let store = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let (_repo, url) = create_git_dependency();
+    fs::create_dir_all(home.path().join(".github/skills")).unwrap();
+
+    let reporter = Reporter::silent();
+    let install_paths = InstallPaths::new(
+        InstallScope::Global,
+        store.path().join("global"),
+        home.path().to_path_buf(),
+        home.path().to_path_buf(),
+    );
+    let error = add_dependency_at_paths_with_adapters(
+        &install_paths,
+        cache.path(),
+        &url,
+        AddDependencyOptions {
+            git_ref: None,
+            version_req: None,
+            kind: DependencyKind::Dependency,
+            adapters: &[],
+            components: &[],
+            sync_on_launch: false,
+        },
+        &reporter,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("no supported global adapters found"));
+}
+
+#[test]
+fn global_add_rejects_sync_on_launch() {
+    let store = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let (_repo, url) = create_git_dependency();
+    fs::create_dir_all(home.path().join(".codex")).unwrap();
+
+    let reporter = Reporter::silent();
+    let install_paths = InstallPaths::new(
+        InstallScope::Global,
+        store.path().join("global"),
+        home.path().to_path_buf(),
+        home.path().to_path_buf(),
+    );
+    let error = add_dependency_at_paths_with_adapters(
+        &install_paths,
+        cache.path(),
+        &url,
+        AddDependencyOptions {
+            git_ref: None,
+            version_req: None,
+            kind: DependencyKind::Dependency,
+            adapters: &[],
+            components: &[],
+            sync_on_launch: true,
+        },
+        &reporter,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("does not support `--sync-on-launch`"));
 }
 
 #[test]
@@ -3874,7 +4069,7 @@ fn doctor_accepts_legacy_detected_adapter_roots_without_manifest_config() {
         build_output_plan(temp.path(), &package_roots, Adapters::CODEX, None, false).unwrap();
     write_managed_files(&output_plan.files).unwrap();
     resolution
-        .to_lockfile(Adapters::CODEX)
+        .to_lockfile(Adapters::CODEX, temp.path())
         .unwrap()
         .write(&temp.path().join(LOCKFILE_NAME))
         .unwrap();

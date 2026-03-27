@@ -1,10 +1,12 @@
 use crate::adapters::Adapter;
 use crate::cli::handlers::CommandContext;
 use crate::cli::output::{display_dependency, format_adapters};
+use crate::install_paths::InstallPaths;
 use crate::manifest::{DependencyComponent, DependencyKind, RequestedGitRef};
 
 pub(crate) struct AddCommand {
     pub(crate) url: String,
+    pub(crate) global: bool,
     pub(crate) dev: bool,
     pub(crate) tag: Option<String>,
     pub(crate) branch: Option<String>,
@@ -19,6 +21,7 @@ pub(crate) struct AddCommand {
 pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> anyhow::Result<()> {
     let AddCommand {
         url,
+        global,
         dev,
         tag,
         branch,
@@ -29,6 +32,14 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
         sync_on_launch,
         dry_run,
     } = command;
+    if global && sync_on_launch {
+        anyhow::bail!("`nodus add --global` does not support `--sync-on-launch`");
+    }
+    let install_paths = if global {
+        InstallPaths::global(context.cache_root)?
+    } else {
+        InstallPaths::project(context.cwd)
+    };
     let options = crate::git::AddDependencyOptions {
         git_ref: requested_git_ref(tag.as_deref(), branch.as_deref(), revision.as_deref())?,
         version_req: version
@@ -45,16 +56,16 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
         sync_on_launch,
     };
     let summary = if dry_run {
-        crate::git::add_dependency_in_dir_with_adapters_dry_run(
-            context.cwd,
+        crate::git::add_dependency_at_paths_with_adapters_dry_run(
+            &install_paths,
             context.cache_root,
             &url,
             options,
             context.reporter,
         )?
     } else {
-        crate::git::add_dependency_in_dir_with_adapters(
-            context.cwd,
+        crate::git::add_dependency_at_paths_with_adapters(
+            &install_paths,
             context.cache_root,
             &url,
             options,
@@ -85,18 +96,24 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
 pub(crate) fn handle_remove(
     context: &CommandContext<'_>,
     package: String,
+    global: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
+    let install_paths = if global {
+        InstallPaths::global(context.cache_root)?
+    } else {
+        InstallPaths::project(context.cwd)
+    };
     let summary = if dry_run {
-        crate::git::remove_dependency_in_dir_dry_run(
-            context.cwd,
+        crate::git::remove_dependency_at_paths_dry_run(
+            &install_paths,
             context.cache_root,
             &package,
             context.reporter,
         )?
     } else {
-        crate::git::remove_dependency_in_dir(
-            context.cwd,
+        crate::git::remove_dependency_at_paths(
+            &install_paths,
             context.cache_root,
             &package,
             context.reporter,

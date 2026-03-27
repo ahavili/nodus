@@ -15,6 +15,32 @@ pub fn load_root_from_dir(root: &Path) -> Result<LoadedManifest> {
     load_from_dir(root, PackageRole::Root)
 }
 
+pub fn load_root_from_dir_allow_missing(root: &Path) -> Result<LoadedManifest> {
+    if root.exists() {
+        return load_root_from_dir(root);
+    }
+
+    let root = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("failed to determine the current directory")?
+            .join(root)
+    };
+    let loaded = LoadedManifest {
+        root,
+        manifest_path: None,
+        manifest: Manifest::default(),
+        discovered: super::PackageContents::default(),
+        warnings: Vec::new(),
+        extra_package_files: Vec::new(),
+        allows_empty_dependency_wrapper: false,
+        manifest_contents_override: None,
+    };
+    loaded.validate(PackageRole::Root)?;
+    Ok(loaded)
+}
+
 pub fn load_dependency_from_dir(root: &Path) -> Result<LoadedManifest> {
     load_from_dir(root, PackageRole::Dependency)
 }
