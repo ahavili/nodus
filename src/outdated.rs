@@ -791,7 +791,7 @@ mod tests {
 review = {{ path = "vendor/review" }}
 disabled = {{ url = "{}", tag = "v0.1.0", enabled = false }}
 "#,
-                repo.path().to_string_lossy(),
+                display_path(repo.path()),
             ),
         );
         write_skill(
