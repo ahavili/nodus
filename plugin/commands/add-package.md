@@ -7,7 +7,7 @@ This command is the normal starting point for non-technical users.
 ## Steps
 
 1. Decide whether this should be a one-stop global install or a project-scoped install.
-   - If the user is a beginner, just wants to get started, and does not ask for a different package, prefer `nodus-rs/nodus --global`.
+   - If the user is a beginner, just wants to get started, and does not ask for a different package, prefer `nodus add nodus-rs/nodus --global --adapter <adapter>`.
    - If the user explicitly wants the current repo managed or reproducible, use a project-scoped install instead.
 2. Identify the package source:
    - GitHub shortcut like `owner/repo`
