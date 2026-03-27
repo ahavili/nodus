@@ -516,6 +516,39 @@ nodus info <package>
 
 如果用户明确说“我要把受管理输出里的修改回传到维护者 checkout”，再进入 `nodus relay` 流程。否则不要主动引导普通用户使用 relay。
 
+默认把它理解成一个**维护者工作流**：
+
+1. 用户先在消费仓库里修改 Nodus 生成的受管理输出
+2. 再用 `nodus relay` 把这些修改回传到一个本地维护者 checkout
+3. Git 提交、push、发版仍然由用户自己完成
+
+这时你应该明确提醒：
+
+- `nodus relay` 回写的是**本地源仓库 checkout**，不是直接推送远端仓库
+- 如果只是更新源仓库里已经存在的 `skills/`、`agents/` 文件，默认直接用 `nodus relay`
+- 如果用户希望把**新建**的受管理 skill / agent 也写回源仓库，要显式使用 `--create-missing`
+
+推荐命令示例：
+
+```bash
+nodus relay <dependency> --repo-path ../maintainer-checkout
+nodus relay <dependency> --repo-path ../maintainer-checkout --create-missing
+nodus relay <dependency> --repo-path ../maintainer-checkout --via copilot --create-missing
+```
+
+解释 `--create-missing` 时要说清楚：
+
+- 它只会为缺失的源文件创建 `skills/<id>/...` 和 `agents/<id>.md`
+- 这是**显式 opt-in** 能力，不要默认替用户打开
+- `--via <adapter>` 用来指定把哪个 adapter 的受管理输出当成创建新源文件的规范来源
+
+如果用户一次 relay 多个依赖：
+
+- 可以使用 `nodus relay dep-a dep-b dep-c`
+- Nodus 可能并行处理多个依赖
+- 但如果多个 relay 任务会写到同一个源路径，Nodus 应该报冲突，而不是抢写
+- 向用户解释时，重点说“可以一起跑，但冲突路径不会并发覆盖”
+
 ---
 
 ## 十二、推荐回答风格
@@ -562,6 +595,9 @@ nodus doctor
 nodus remove <alias>
 nodus remove <alias> --global
 nodus init
+nodus relay <dependency> --repo-path ../maintainer-checkout
+nodus relay <dependency> --repo-path ../maintainer-checkout --create-missing
+nodus relay dep-a dep-b
 ```
 
 ---
