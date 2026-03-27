@@ -3,12 +3,14 @@ mod watch;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
 
 use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 
 use self::watch::{
-    RelayWatchOptions, watch_dependencies_in_dir_with_options, watch_dependency_in_dir_with_options,
+    RelayWatchInvocation, RelayWatchOptions, watch_dependencies_in_dir_with_options,
+    watch_dependency_in_dir_with_options,
 };
 use crate::adapters::{
     Adapter, Adapters, ArtifactKind, ManagedArtifactNames, managed_artifact_path,
@@ -32,6 +34,7 @@ use crate::store::snapshot_packages;
 pub struct RelaySummary {
     pub alias: String,
     pub linked_repo: PathBuf,
+    pub created_file_count: usize,
     pub updated_file_count: usize,
 }
 
@@ -56,8 +59,9 @@ struct DependencyContext {
 #[derive(Debug, Clone)]
 struct RelayFileMapping {
     managed_path: PathBuf,
-    snapshot_path: PathBuf,
+    snapshot_path: Option<PathBuf>,
     linked_source_path: PathBuf,
+    artifact_id: String,
     transform: RelayTransform,
 }
 
@@ -68,12 +72,39 @@ enum RelayTransform {
     CopilotSkillName { managed_skill_id: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelayOperationKind {
+    Create,
+    Update,
+}
+
+#[derive(Debug, Clone)]
+struct RelayWrite {
+    kind: RelayOperationKind,
+    contents: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct RelayPlan {
-    updates: BTreeMap<PathBuf, Vec<u8>>,
+    writes: BTreeMap<PathBuf, RelayWrite>,
     noops: BTreeSet<PathBuf>,
     state_files: BTreeMap<String, RelayedFileState>,
     conflicts: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RelayJobPlan {
+    dependency: DependencyContext,
+    linked_repo: PathBuf,
+    plan: RelayPlan,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RelayExecution<'a> {
+    repo_path_override: Option<&'a Path>,
+    via_override: Option<Adapter>,
+    create_missing: bool,
+    execution_mode: ExecutionMode,
 }
 
 pub fn relay_dependency_in_dir(
@@ -82,127 +113,175 @@ pub fn relay_dependency_in_dir(
     package: &str,
     repo_path_override: Option<&Path>,
     via_override: Option<Adapter>,
+    create_missing: bool,
     reporter: &Reporter,
 ) -> Result<RelaySummary> {
-    relay_dependency_in_dir_mode(
+    let packages = vec![package.to_string()];
+    let mut summaries = relay_dependencies_in_dir_mode(
         project_root,
         cache_root,
-        package,
-        repo_path_override,
-        via_override,
-        ExecutionMode::Apply,
+        &packages,
+        RelayExecution {
+            repo_path_override,
+            via_override,
+            create_missing,
+            execution_mode: ExecutionMode::Apply,
+        },
+        reporter,
+    )?;
+    Ok(summaries.remove(0))
+}
+
+pub fn relay_dependencies_in_dir(
+    project_root: &Path,
+    cache_root: &Path,
+    packages: &[String],
+    repo_path_override: Option<&Path>,
+    via_override: Option<Adapter>,
+    create_missing: bool,
+    reporter: &Reporter,
+) -> Result<Vec<RelaySummary>> {
+    relay_dependencies_in_dir_mode(
+        project_root,
+        cache_root,
+        packages,
+        RelayExecution {
+            repo_path_override,
+            via_override,
+            create_missing,
+            execution_mode: ExecutionMode::Apply,
+        },
         reporter,
     )
 }
 
-pub fn relay_dependency_in_dir_dry_run(
+pub fn relay_dependencies_in_dir_dry_run(
     project_root: &Path,
     cache_root: &Path,
-    package: &str,
+    packages: &[String],
     repo_path_override: Option<&Path>,
     via_override: Option<Adapter>,
+    create_missing: bool,
     reporter: &Reporter,
-) -> Result<RelaySummary> {
-    relay_dependency_in_dir_mode(
+) -> Result<Vec<RelaySummary>> {
+    relay_dependencies_in_dir_mode(
         project_root,
         cache_root,
-        package,
-        repo_path_override,
-        via_override,
-        ExecutionMode::DryRun,
+        packages,
+        RelayExecution {
+            repo_path_override,
+            via_override,
+            create_missing,
+            execution_mode: ExecutionMode::DryRun,
+        },
         reporter,
     )
 }
 
-fn relay_dependency_in_dir_mode(
+fn relay_dependencies_in_dir_mode(
     project_root: &Path,
     cache_root: &Path,
-    package: &str,
-    repo_path_override: Option<&Path>,
-    via_override: Option<Adapter>,
-    execution_mode: ExecutionMode,
+    packages: &[String],
+    execution: RelayExecution<'_>,
     reporter: &Reporter,
-) -> Result<RelaySummary> {
+) -> Result<Vec<RelaySummary>> {
+    if packages.is_empty() {
+        bail!("relay requires at least one dependency");
+    }
+    if packages.len() > 1 && execution.repo_path_override.is_some() {
+        bail!("`nodus relay --repo-path` requires exactly one dependency");
+    }
+
     let mut workspace = load_workspace(project_root, cache_root, reporter)?;
     let original_local_config = workspace.local_config.clone();
-    let dependency = dependency_context(&workspace, package)?;
-    let linked_repo = resolve_linked_repo(
-        &mut workspace.local_config,
-        &dependency,
-        repo_path_override,
-        via_override,
-    )?;
+    let mut jobs = Vec::with_capacity(packages.len());
+    for package in packages {
+        let dependency = dependency_context(&workspace, package)?;
+        let linked_repo = resolve_linked_repo(
+            &mut workspace.local_config,
+            &dependency,
+            execution.repo_path_override,
+            execution.via_override,
+        )?;
 
-    let plan = build_relay_plan(
-        &workspace,
-        &dependency,
-        &workspace.project_root,
-        workspace.selected_adapters,
-        workspace.local_config.relay_link(&dependency.alias),
-        &linked_repo,
-    )?;
-    if !plan.conflicts.is_empty() {
-        bail!(
-            "relay conflicts for `{}`:\n{}",
-            dependency.alias,
-            plan.conflicts.join("\n")
-        );
+        let plan = build_relay_plan(
+            &workspace,
+            &dependency,
+            &workspace.project_root,
+            workspace.selected_adapters,
+            workspace.local_config.relay_link(&dependency.alias),
+            &linked_repo,
+            execution.create_missing,
+        )?;
+        if !plan.conflicts.is_empty() {
+            bail!(
+                "relay conflicts for `{}`:\n{}",
+                dependency.alias,
+                plan.conflicts.join("\n")
+            );
+        }
+        jobs.push(RelayJobPlan {
+            dependency,
+            linked_repo,
+            plan,
+        });
     }
-    update_relay_link_state(&mut workspace.local_config, &dependency, &plan)?;
+
+    ensure_disjoint_job_writes(&jobs)?;
+
+    for job in &jobs {
+        update_relay_link_state(&mut workspace.local_config, &job.dependency, &job.plan)?;
+    }
     let local_config_changed = workspace.local_config != original_local_config;
 
-    if execution_mode.is_dry_run() {
-        if local_config_changed {
-            reporter.preview(&PreviewChange::PersistLocalConfig(config_path(
-                project_root,
-            )))?;
-            let gitignore_path = local_dir(project_root).join(".gitignore");
-            let gitignore_change = if gitignore_path.exists() {
-                PreviewChange::Write(gitignore_path)
-            } else {
-                PreviewChange::Create(gitignore_path)
-            };
-            reporter.preview(&gitignore_change)?;
-        }
-        reporter.status("Preview", format!("relay edits for {}", dependency.alias))?;
-        for path in plan.updates.keys() {
-            reporter.preview(&PreviewChange::Relay(path.clone()))?;
-        }
-        for path in &plan.noops {
-            reporter.note(format!(
-                "{} already matches managed edits",
-                display_relative(&linked_repo, path)
-            ))?;
-        }
+    if execution.execution_mode.is_dry_run() {
+        preview_relay_jobs(project_root, reporter, local_config_changed, &jobs)?;
     } else {
-        reporter.status(
-            "Relaying",
-            format!("managed edits for {}", dependency.alias),
-        )?;
-        for (path, contents) in &plan.updates {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("failed to create {}", parent.display()))?;
+        apply_relay_jobs(&jobs)?;
+        for job in &jobs {
+            reporter.status(
+                "Relaying",
+                format!("managed edits for {}", job.dependency.alias),
+            )?;
+            for (path, write) in &job.plan.writes {
+                let action = match write.kind {
+                    RelayOperationKind::Create => "created",
+                    RelayOperationKind::Update => "updated",
+                };
+                reporter.note(format!(
+                    "{action} {}",
+                    display_relative(&job.linked_repo, path)
+                ))?;
             }
-            crate::store::write_atomic(path, contents)
-                .with_context(|| format!("failed to write relayed source {}", path.display()))?;
-            reporter.note(format!("updated {}", display_relative(&linked_repo, path)))?;
+            for path in &job.plan.noops {
+                reporter.note(format!(
+                    "{} already matches managed edits",
+                    display_relative(&job.linked_repo, path)
+                ))?;
+            }
         }
-        for path in &plan.noops {
-            reporter.note(format!(
-                "{} already matches managed edits",
-                display_relative(&linked_repo, path)
-            ))?;
-        }
-
         workspace.local_config.save_in_dir(project_root)?;
     }
 
-    Ok(RelaySummary {
-        alias: dependency.alias,
-        linked_repo,
-        updated_file_count: plan.updates.len(),
-    })
+    Ok(jobs
+        .into_iter()
+        .map(|job| RelaySummary {
+            alias: job.dependency.alias,
+            linked_repo: job.linked_repo,
+            created_file_count: job
+                .plan
+                .writes
+                .values()
+                .filter(|write| write.kind == RelayOperationKind::Create)
+                .count(),
+            updated_file_count: job
+                .plan
+                .writes
+                .values()
+                .filter(|write| write.kind == RelayOperationKind::Update)
+                .count(),
+        })
+        .collect())
 }
 
 pub fn watch_dependency_in_dir(
@@ -211,16 +290,20 @@ pub fn watch_dependency_in_dir(
     package: &str,
     repo_path_override: Option<&Path>,
     via_override: Option<Adapter>,
+    create_missing: bool,
     reporter: &Reporter,
 ) -> Result<()> {
     watch_dependency_in_dir_with_options(
         project_root,
         cache_root,
         package,
-        repo_path_override,
-        via_override,
+        RelayWatchInvocation {
+            repo_path_override,
+            via_override,
+            create_missing,
+            options: RelayWatchOptions::default(),
+        },
         reporter,
-        RelayWatchOptions::default(),
     )
     .map(|_| ())
 }
@@ -230,15 +313,20 @@ pub fn watch_dependencies_in_dir(
     cache_root: &Path,
     packages: &[String],
     via_override: Option<Adapter>,
+    create_missing: bool,
     reporter: &Reporter,
 ) -> Result<()> {
     watch_dependencies_in_dir_with_options(
         project_root,
         cache_root,
         packages,
-        via_override,
+        RelayWatchInvocation {
+            repo_path_override: None,
+            via_override,
+            create_missing,
+            options: RelayWatchOptions::default(),
+        },
         reporter,
-        RelayWatchOptions::default(),
     )
     .map(|_| ())
 }
@@ -276,15 +364,16 @@ pub fn ensure_no_pending_relay_edits_in_dir(project_root: &Path, cache_root: &Pa
             workspace.selected_adapters,
             workspace.local_config.relay_link(&alias),
             &linked,
+            false,
         )?;
         if !plan.conflicts.is_empty() {
             blocked.push(format!("{alias}: {}", plan.conflicts.join("; ")));
             continue;
         }
-        if !plan.updates.is_empty() {
+        if !plan.writes.is_empty() {
             blocked.push(format!(
                 "{alias}: {} pending relayed source files",
-                plan.updates.len()
+                plan.writes.len()
             ));
         }
     }
@@ -542,16 +631,29 @@ fn build_relay_plan(
     selected_adapters: Adapters,
     relay_link: Option<&RelayLink>,
     linked_repo: &Path,
+    create_missing: bool,
 ) -> Result<RelayPlan> {
     let managed_names =
         ManagedArtifactNames::from_resolved_packages(workspace.resolution.packages.iter());
-    let mappings = build_mappings(
+    let mut mappings = build_mappings(
         &managed_names,
+        &workspace.resolution.packages,
         dependency,
         project_root,
         selected_adapters,
         linked_repo,
     )?;
+    if create_missing {
+        mappings.extend(build_missing_mappings(
+            &managed_names,
+            &workspace.resolution.packages,
+            dependency,
+            project_root,
+            selected_adapters,
+            relay_link.and_then(|link| link.via),
+            linked_repo,
+        )?);
+    }
     let mut grouped = BTreeMap::<PathBuf, Vec<RelayFileMapping>>::new();
     for mapping in mappings {
         grouped
@@ -567,16 +669,6 @@ fn build_relay_plan(
         let mut baseline_source: Option<Vec<u8>> = None;
 
         for mapping in group {
-            let mapping_baseline = fs::read(&mapping.snapshot_path).with_context(|| {
-                format!(
-                    "failed to read relay baseline {}",
-                    mapping.snapshot_path.display()
-                )
-            })?;
-            if baseline_source.is_none() {
-                baseline_source = Some(mapping_baseline.clone());
-            }
-            let baseline_managed = mapping.transform.to_managed_bytes(&mapping_baseline)?;
             let current_managed = match fs::read(&mapping.managed_path) {
                 Ok(contents) => contents,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -593,13 +685,28 @@ fn build_relay_plan(
                     });
                 }
             };
-            if current_managed == baseline_managed {
-                continue;
-            }
+            let mapping_baseline = match &mapping.snapshot_path {
+                Some(snapshot_path) => {
+                    let baseline = fs::read(snapshot_path).with_context(|| {
+                        format!("failed to read relay baseline {}", snapshot_path.display())
+                    })?;
+                    if baseline_source.is_none() {
+                        baseline_source = Some(baseline.clone());
+                    }
+                    let baseline_managed = mapping.transform.to_managed_bytes(&baseline)?;
+                    if current_managed == baseline_managed {
+                        continue;
+                    }
+                    Some(baseline)
+                }
+                None => None,
+            };
 
-            let candidate = mapping
-                .transform
-                .to_source_bytes(&current_managed, &mapping_baseline)?;
+            let candidate = mapping.transform.to_source_bytes(
+                &current_managed,
+                mapping_baseline.as_deref(),
+                &mapping.artifact_id,
+            )?;
             if let Some(existing) = &candidate_source {
                 if existing != &candidate {
                     plan.conflicts.push(format!(
@@ -634,24 +741,45 @@ fn build_relay_plan(
             );
             continue;
         }
-        if baseline_source
-            .as_deref()
-            .is_some_and(|baseline| linked_current.as_deref() != Some(baseline))
-            && !linked_hash_matches_state
-        {
-            plan.conflicts.push(format!(
-                "{} changed in both managed outputs and linked source",
-                linked_source_path.display()
-            ));
-            continue;
+        match baseline_source.as_deref() {
+            Some(baseline)
+                if linked_current.is_some()
+                    && linked_current.as_deref() != Some(baseline)
+                    && !linked_hash_matches_state =>
+            {
+                plan.conflicts.push(format!(
+                    "{} changed in both managed outputs and linked source",
+                    linked_source_path.display()
+                ));
+                continue;
+            }
+            None if linked_current.is_some() && !linked_hash_matches_state => {
+                plan.conflicts.push(format!(
+                    "{} already exists in the linked source and does not match the managed creation candidate",
+                    linked_source_path.display()
+                ));
+                continue;
+            }
+            _ => {}
         }
         plan.state_files.insert(
-            relative_path,
+            relative_path.clone(),
             RelayedFileState {
                 source_sha256: sha256_hex(&candidate_source),
             },
         );
-        plan.updates.insert(linked_source_path, candidate_source);
+        let kind = if linked_current.is_some() {
+            RelayOperationKind::Update
+        } else {
+            RelayOperationKind::Create
+        };
+        plan.writes.insert(
+            linked_source_path,
+            RelayWrite {
+                kind,
+                contents: candidate_source,
+            },
+        );
     }
 
     Ok(plan)
@@ -680,12 +808,108 @@ fn update_relay_link_state(
     Ok(())
 }
 
+fn ensure_disjoint_job_writes(jobs: &[RelayJobPlan]) -> Result<()> {
+    let mut owners = BTreeMap::<PathBuf, &str>::new();
+    for job in jobs {
+        for path in job.plan.writes.keys() {
+            if let Some(existing) = owners.insert(path.clone(), &job.dependency.alias) {
+                bail!(
+                    "relay jobs for `{existing}` and `{}` both write {}",
+                    job.dependency.alias,
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn preview_relay_jobs(
+    project_root: &Path,
+    reporter: &Reporter,
+    local_config_changed: bool,
+    jobs: &[RelayJobPlan],
+) -> Result<()> {
+    if local_config_changed {
+        reporter.preview(&PreviewChange::PersistLocalConfig(config_path(
+            project_root,
+        )))?;
+        let gitignore_path = local_dir(project_root).join(".gitignore");
+        let gitignore_change = if gitignore_path.exists() {
+            PreviewChange::Write(gitignore_path)
+        } else {
+            PreviewChange::Create(gitignore_path)
+        };
+        reporter.preview(&gitignore_change)?;
+    }
+
+    for job in jobs {
+        reporter.status(
+            "Preview",
+            format!("relay edits for {}", job.dependency.alias),
+        )?;
+        for (path, write) in &job.plan.writes {
+            match write.kind {
+                RelayOperationKind::Create => {
+                    reporter.preview(&PreviewChange::Create(path.clone()))?
+                }
+                RelayOperationKind::Update => {
+                    reporter.preview(&PreviewChange::Relay(path.clone()))?
+                }
+            }
+        }
+        for path in &job.plan.noops {
+            reporter.note(format!(
+                "{} already matches managed edits",
+                display_relative(&job.linked_repo, path)
+            ))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_relay_jobs(jobs: &[RelayJobPlan]) -> Result<()> {
+    if jobs.len() <= 1 {
+        for job in jobs {
+            apply_relay_job(job)?;
+        }
+        return Ok(());
+    }
+
+    thread::scope(|scope| -> Result<()> {
+        let mut handles = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            handles.push(scope.spawn(move || apply_relay_job(job)));
+        }
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| anyhow!("relay worker thread panicked"))??;
+        }
+        Ok(())
+    })
+}
+
+fn apply_relay_job(job: &RelayJobPlan) -> Result<()> {
+    for (path, write) in &job.plan.writes {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        crate::store::write_atomic(path, &write.contents)
+            .with_context(|| format!("failed to write relayed source {}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
 fn build_mappings(
     names: &ManagedArtifactNames,
+    _packages: &[ResolvedPackage],
     dependency: &DependencyContext,
     project_root: &Path,
     selected_adapters: Adapters,
@@ -744,8 +968,9 @@ fn build_mappings(
             ) {
                 mappings.push(file_mapping(
                     managed_path,
-                    snapshot_root.join(&agent.path),
+                    Some(snapshot_root.join(&agent.path)),
                     linked_repo.join(&agent.path),
+                    agent.id.clone(),
                     RelayTransform::None,
                 ));
             }
@@ -769,8 +994,9 @@ fn build_mappings(
             {
                 mappings.push(file_mapping(
                     managed_path,
-                    snapshot_root.join(&rule.path),
+                    Some(snapshot_root.join(&rule.path)),
                     linked_repo.join(&rule.path),
+                    rule.id.clone(),
                     RelayTransform::None,
                 ));
             }
@@ -795,8 +1021,9 @@ fn build_mappings(
             {
                 mappings.push(file_mapping(
                     managed_path,
-                    snapshot_root.join(&command.path),
+                    Some(snapshot_root.join(&command.path)),
                     linked_repo.join(&command.path),
+                    command.id.clone(),
                     RelayTransform::None,
                 ));
             }
@@ -807,10 +1034,188 @@ fn build_mappings(
         for file in &mapping.files {
             mappings.push(file_mapping(
                 project_root.join(&file.target_relative),
-                snapshot_root.join(&file.source_relative),
+                Some(snapshot_root.join(&file.source_relative)),
                 linked_repo.join(&file.source_relative),
+                file.source_relative.to_string_lossy().into_owned(),
                 RelayTransform::None,
             ));
+        }
+    }
+    Ok(mappings)
+}
+
+fn build_missing_mappings(
+    names: &ManagedArtifactNames,
+    packages: &[ResolvedPackage],
+    dependency: &DependencyContext,
+    project_root: &Path,
+    selected_adapters: Adapters,
+    preferred_adapter: Option<Adapter>,
+    linked_repo: &Path,
+) -> Result<Vec<RelayFileMapping>> {
+    if let Some(adapter) = preferred_adapter {
+        if !selected_adapters.contains(adapter) {
+            bail!(
+                "relay preferred adapter `{}` is not active in the current managed outputs",
+                adapter
+            );
+        }
+        return build_missing_mappings_for_adapter(
+            names,
+            packages,
+            dependency,
+            project_root,
+            adapter,
+            linked_repo,
+        );
+    }
+
+    let mut candidates = Vec::new();
+    for adapter in Adapter::ALL {
+        if !selected_adapters.contains(adapter) {
+            continue;
+        }
+        let mappings = build_missing_mappings_for_adapter(
+            names,
+            packages,
+            dependency,
+            project_root,
+            adapter,
+            linked_repo,
+        )?;
+        if !mappings.is_empty() {
+            candidates.push((adapter, mappings));
+        }
+    }
+
+    match candidates.len() {
+        0 => Ok(Vec::new()),
+        1 => Ok(candidates.remove(0).1),
+        _ => bail!(
+            "managed creation candidates for `{}` appear in multiple adapters; rerun with `--via <adapter>`",
+            dependency.alias
+        ),
+    }
+}
+
+fn build_missing_mappings_for_adapter(
+    names: &ManagedArtifactNames,
+    packages: &[ResolvedPackage],
+    dependency: &DependencyContext,
+    project_root: &Path,
+    adapter: Adapter,
+    linked_repo: &Path,
+) -> Result<Vec<RelayFileMapping>> {
+    let mut mappings = Vec::new();
+    let runtime_root = crate::adapters::runtime_root(project_root, adapter);
+
+    if dependency
+        .package
+        .selects_component(crate::manifest::DependencyComponent::Skills)
+    {
+        let known_skill_roots = packages
+            .iter()
+            .filter(|package| {
+                package.selects_component(crate::manifest::DependencyComponent::Skills)
+            })
+            .flat_map(|package| {
+                package
+                    .manifest
+                    .discovered
+                    .skills
+                    .iter()
+                    .map(|skill| {
+                        managed_skill_root(names, project_root, adapter, package, &skill.id)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<BTreeSet<_>>();
+        let skills_root = runtime_root.join("skills");
+        if skills_root.is_dir() {
+            for entry in fs::read_dir(&skills_root)
+                .with_context(|| format!("failed to read {}", skills_root.display()))?
+            {
+                let entry = entry?;
+                let managed_root = entry.path();
+                if !entry.file_type()?.is_dir()
+                    || known_skill_roots.contains(&managed_root)
+                    || !managed_root.join("SKILL.md").is_file()
+                {
+                    continue;
+                }
+                let skill_id = entry.file_name().to_string_lossy().into_owned();
+                mappings.extend(missing_skill_mappings(
+                    names,
+                    adapter,
+                    &dependency.package,
+                    &skill_id,
+                    &managed_root,
+                    &linked_repo.join("skills").join(&skill_id),
+                )?);
+            }
+        }
+    }
+
+    if dependency
+        .package
+        .selects_component(crate::manifest::DependencyComponent::Agents)
+        && matches!(
+            adapter,
+            Adapter::Claude | Adapter::Copilot | Adapter::OpenCode
+        )
+    {
+        let known_agent_paths = packages
+            .iter()
+            .filter(|package| {
+                package.selects_component(crate::manifest::DependencyComponent::Agents)
+            })
+            .flat_map(|package| {
+                package
+                    .manifest
+                    .discovered
+                    .agents
+                    .iter()
+                    .filter_map(|agent| {
+                        managed_artifact_path(
+                            names,
+                            project_root,
+                            adapter,
+                            ArtifactKind::Agent,
+                            package,
+                            &agent.id,
+                        )
+                    })
+            })
+            .collect::<BTreeSet<_>>();
+        let agents_root = runtime_root.join("agents");
+        if agents_root.is_dir() {
+            for entry in fs::read_dir(&agents_root)
+                .with_context(|| format!("failed to read {}", agents_root.display()))?
+            {
+                let entry = entry?;
+                if !entry.file_type()?.is_file() {
+                    continue;
+                }
+                let managed_path = entry.path();
+                if known_agent_paths.contains(&managed_path) {
+                    continue;
+                }
+                let file_name = entry.file_name().to_string_lossy().into_owned();
+                let Some(agent_id) = (match adapter {
+                    Adapter::Copilot => file_name.strip_suffix(".agent.md"),
+                    Adapter::Claude | Adapter::OpenCode => file_name.strip_suffix(".md"),
+                    _ => None,
+                }) else {
+                    continue;
+                };
+                mappings.push(file_mapping(
+                    managed_path,
+                    None,
+                    linked_repo.join("agents").join(format!("{agent_id}.md")),
+                    agent_id.to_string(),
+                    RelayTransform::None,
+                ));
+            }
         }
     }
 
@@ -851,8 +1256,51 @@ fn skill_mappings(
         };
         mappings.push(file_mapping(
             managed_root.join(relative),
-            source_root.join(relative),
+            Some(source_root.join(relative)),
             linked_root.join(relative),
+            skill.id.clone(),
+            transform,
+        ));
+    }
+    Ok(mappings)
+}
+
+fn missing_skill_mappings(
+    names: &ManagedArtifactNames,
+    adapter: Adapter,
+    package: &ResolvedPackage,
+    skill_id: &str,
+    managed_root: &Path,
+    linked_root: &Path,
+) -> Result<Vec<RelayFileMapping>> {
+    let mut mappings = Vec::new();
+    for entry in walkdir::WalkDir::new(managed_root) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(managed_root)
+            .with_context(|| format!("failed to make {} relative", entry.path().display()))?;
+        let transform = if relative == Path::new("SKILL.md") {
+            match adapter {
+                Adapter::OpenCode => RelayTransform::OpenCodeSkillName {
+                    managed_skill_id: crate::adapters::managed_skill_id(names, package, skill_id),
+                },
+                Adapter::Copilot => RelayTransform::CopilotSkillName {
+                    managed_skill_id: crate::adapters::managed_skill_id(names, package, skill_id),
+                },
+                _ => RelayTransform::None,
+            }
+        } else {
+            RelayTransform::None
+        };
+        mappings.push(file_mapping(
+            managed_root.join(relative),
+            None,
+            linked_root.join(relative),
+            skill_id.to_string(),
             transform,
         ));
     }
@@ -861,14 +1309,16 @@ fn skill_mappings(
 
 fn file_mapping(
     managed_path: PathBuf,
-    snapshot_path: PathBuf,
+    snapshot_path: Option<PathBuf>,
     linked_source_path: PathBuf,
+    artifact_id: String,
     transform: RelayTransform,
 ) -> RelayFileMapping {
     RelayFileMapping {
         managed_path,
         snapshot_path,
         linked_source_path,
+        artifact_id,
         transform,
     }
 }
@@ -886,18 +1336,38 @@ impl RelayTransform {
         }
     }
 
-    fn to_source_bytes(&self, managed: &[u8], baseline_source: &[u8]) -> Result<Vec<u8>> {
+    fn to_source_bytes(
+        &self,
+        managed: &[u8],
+        baseline_source: Option<&[u8]>,
+        artifact_id: &str,
+    ) -> Result<Vec<u8>> {
         match self {
             Self::None => Ok(managed.to_vec()),
-            Self::OpenCodeSkillName { managed_skill_id } => {
-                restore_rewritten_skill_name(managed, baseline_source, managed_skill_id, "OpenCode")
-            }
-            Self::CopilotSkillName { managed_skill_id } => restore_rewritten_skill_name(
-                managed,
-                baseline_source,
-                managed_skill_id,
-                "GitHub Copilot",
-            ),
+            Self::OpenCodeSkillName { managed_skill_id } => baseline_source
+                .map(|baseline_source| {
+                    restore_rewritten_skill_name(
+                        managed,
+                        baseline_source,
+                        managed_skill_id,
+                        "OpenCode",
+                    )
+                })
+                .unwrap_or_else(|| {
+                    restore_skill_name_without_baseline(managed, artifact_id, "OpenCode")
+                }),
+            Self::CopilotSkillName { managed_skill_id } => baseline_source
+                .map(|baseline_source| {
+                    restore_rewritten_skill_name(
+                        managed,
+                        baseline_source,
+                        managed_skill_id,
+                        "GitHub Copilot",
+                    )
+                })
+                .unwrap_or_else(|| {
+                    restore_skill_name_without_baseline(managed, artifact_id, "GitHub Copilot")
+                }),
         }
     }
 }
@@ -944,6 +1414,24 @@ fn extract_frontmatter_name(contents: &str, adapter_name: &str) -> Result<String
         }
     }
     bail!("{adapter_name} skill is missing a frontmatter `name`")
+}
+
+fn restore_skill_name_without_baseline(
+    managed: &[u8],
+    artifact_id: &str,
+    adapter_name: &str,
+) -> Result<Vec<u8>> {
+    let managed = String::from_utf8(managed.to_vec())
+        .with_context(|| format!("{adapter_name} managed skills must be UTF-8"))?;
+    let mut lines = split_lines_preserving_endings(&managed);
+    let Some(index) = lines
+        .iter()
+        .position(|line| trim_line_ending(line).trim_start().starts_with("name:"))
+    else {
+        bail!("{adapter_name} managed skill is missing a frontmatter `name`");
+    };
+    lines[index] = rewrite_frontmatter_name_line(&lines[index], artifact_id);
+    Ok(lines.concat().into_bytes())
 }
 
 fn split_lines_preserving_endings(contents: &str) -> Vec<String> {
@@ -1073,6 +1561,44 @@ mod tests {
         )
     }
 
+    fn relay_dependency_in_dir(
+        project_root: &Path,
+        cache_root: &Path,
+        package: &str,
+        repo_path_override: Option<&Path>,
+        via_override: Option<Adapter>,
+        reporter: &Reporter,
+    ) -> Result<RelaySummary> {
+        super::relay_dependency_in_dir(
+            project_root,
+            cache_root,
+            package,
+            repo_path_override,
+            via_override,
+            false,
+            reporter,
+        )
+    }
+
+    fn relay_dependency_in_dir_create_missing(
+        project_root: &Path,
+        cache_root: &Path,
+        package: &str,
+        repo_path_override: Option<&Path>,
+        via_override: Option<Adapter>,
+        reporter: &Reporter,
+    ) -> Result<RelaySummary> {
+        super::relay_dependency_in_dir(
+            project_root,
+            cache_root,
+            package,
+            repo_path_override,
+            via_override,
+            true,
+            reporter,
+        )
+    }
+
     fn wait_until(mut predicate: impl FnMut() -> bool, message: &str) {
         for _ in 0..500 {
             if predicate() {
@@ -1133,6 +1659,37 @@ mod tests {
         create_remote_dependency_named("playbook-ios")
     }
 
+    fn create_versioned_dependency_with_same_skill() -> (TempDir, PathBuf) {
+        let (temp, repo_path) = create_remote_dependency_named("playbook-versioned");
+        write_file(&repo_path.join("README.md"), "# Version two\n");
+        run_git(&repo_path, &["add", "."]);
+        run_git(&repo_path, &["commit", "-m", "version two"]);
+        run_git(&repo_path, &["tag", "v0.2.0"]);
+        (temp, repo_path)
+    }
+
+    fn create_versioned_dependency_with_disjoint_skills() -> (TempDir, PathBuf) {
+        let temp = TempDir::new().unwrap();
+        let repo_path = temp.path().join("playbook-disjoint");
+        fs::create_dir_all(&repo_path).unwrap();
+        write_file(
+            &repo_path.join("skills/review/SKILL.md"),
+            "---\nname: Review\ndescription: Review skill.\n---\n# Review\n",
+        );
+        init_git_repo(&repo_path);
+        run_git(&repo_path, &["tag", "v0.1.0"]);
+
+        fs::remove_dir_all(repo_path.join("skills/review")).unwrap();
+        write_file(
+            &repo_path.join("skills/checks/SKILL.md"),
+            "---\nname: Checks\ndescription: Checks skill.\n---\n# Checks\n",
+        );
+        run_git(&repo_path, &["add", "."]);
+        run_git(&repo_path, &["commit", "-m", "version two"]);
+        run_git(&repo_path, &["tag", "v0.2.0"]);
+        (temp, repo_path)
+    }
+
     fn clone_linked_repo(remote: &Path) -> TempDir {
         let linked = TempDir::new().unwrap();
         let target = linked.path().join("linked");
@@ -1185,6 +1742,15 @@ mod tests {
     }
 
     fn resolved_package(project: &Path, cache: &Path, adapters: &[Adapter]) -> ResolvedPackage {
+        resolved_package_by_alias(project, cache, adapters, "playbook_ios")
+    }
+
+    fn resolved_package_by_alias(
+        project: &Path,
+        cache: &Path,
+        adapters: &[Adapter],
+        alias: &str,
+    ) -> ResolvedPackage {
         let reporter = Reporter::silent();
         let (resolution, _) = resolve_project_from_existing_lockfile_in_dir(
             project,
@@ -1196,7 +1762,7 @@ mod tests {
         resolution
             .packages
             .into_iter()
-            .find(|package| package.alias == "playbook_ios")
+            .find(|package| package.alias == alias)
             .unwrap()
     }
 
@@ -1360,6 +1926,101 @@ mod tests {
             fs::read_to_string(linked_repo.join("agents/security.md"))
                 .unwrap()
                 .ends_with("\nCopilot agent update.\n")
+        );
+    }
+
+    #[test]
+    fn relay_create_missing_is_opt_in() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Copilot],
+        );
+
+        let package = resolved_package(project.path(), cache.path(), &[Adapter::Copilot]);
+        let new_skill_root = project.path().join(".github/skills/draft");
+        write_file(
+            &new_skill_root.join("SKILL.md"),
+            "---\nname: draft_managed\ndescription: New draft.\n---\n# Draft\n",
+        );
+        write_file(
+            &project.path().join(".github/agents/auditor.agent.md"),
+            "# Auditor\n",
+        );
+
+        let summary = relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            Some(Adapter::Copilot),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.created_file_count, 0);
+        assert_eq!(summary.updated_file_count, 0);
+        assert!(!linked_repo.join("skills/draft/SKILL.md").exists());
+        assert!(!linked_repo.join("agents/auditor.md").exists());
+        assert!(
+            package
+                .manifest
+                .discovered
+                .skills
+                .iter()
+                .any(|skill| skill.id == "review")
+        );
+    }
+
+    #[test]
+    fn relay_create_missing_copies_new_copilot_skill_and_agent_into_source() {
+        let (_remote_root, remote_repo) = create_remote_dependency();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        install_dependency(
+            project.path(),
+            cache.path(),
+            &remote_repo,
+            &[Adapter::Copilot],
+        );
+
+        write_file(
+            &project.path().join(".github/skills/draft/SKILL.md"),
+            "---\nname: draft_managed\ndescription: New draft.\n---\n# Draft\n",
+        );
+        write_file(
+            &project.path().join(".github/agents/auditor.agent.md"),
+            "# Auditor\n",
+        );
+
+        let summary = relay_dependency_in_dir_create_missing(
+            project.path(),
+            cache.path(),
+            "playbook_ios",
+            Some(&linked_repo),
+            Some(Adapter::Copilot),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.created_file_count, 2);
+        assert_eq!(summary.updated_file_count, 0);
+        assert!(
+            fs::read_to_string(linked_repo.join("skills/draft/SKILL.md"))
+                .unwrap()
+                .contains("name: draft")
+        );
+        assert_eq!(
+            fs::read_to_string(linked_repo.join("agents/auditor.md")).unwrap(),
+            "# Auditor\n"
         );
     }
 
@@ -2022,6 +2683,192 @@ tag = {:?}
     }
 
     #[test]
+    fn relay_batch_supports_same_repo_disjoint_write_sets() {
+        let (_remote_root, remote_repo) = create_versioned_dependency_with_disjoint_skills();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &project.path().join("nodus.toml"),
+            &format!(
+                r#"
+[adapters]
+enabled = ["claude"]
+
+[dependencies.review_pkg]
+url = "{}"
+tag = "v0.1.0"
+
+[dependencies.checks_pkg]
+url = "{}"
+tag = "v0.2.0"
+"#,
+                toml_path_value(&remote_repo),
+                toml_path_value(&remote_repo)
+            ),
+        );
+        sync_project(project.path(), cache.path(), &[Adapter::Claude]);
+
+        let review_pkg = resolved_package_by_alias(
+            project.path(),
+            cache.path(),
+            &[Adapter::Claude],
+            "review_pkg",
+        );
+        let checks_pkg = resolved_package_by_alias(
+            project.path(),
+            cache.path(),
+            &[Adapter::Claude],
+            "checks_pkg",
+        );
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "review_pkg",
+            Some(&linked_repo),
+            Some(Adapter::Claude),
+            &Reporter::silent(),
+        )
+        .unwrap();
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "checks_pkg",
+            Some(&linked_repo),
+            Some(Adapter::Claude),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        append_file(
+            &managed_skill_root(project.path(), Adapter::Claude, &review_pkg, "review")
+                .join("SKILL.md"),
+            "\nReview relay update.\n",
+        );
+        append_file(
+            &managed_skill_root(project.path(), Adapter::Claude, &checks_pkg, "checks")
+                .join("SKILL.md"),
+            "\nChecks relay update.\n",
+        );
+
+        let summaries = super::relay_dependencies_in_dir(
+            project.path(),
+            cache.path(),
+            &["review_pkg".into(), "checks_pkg".into()],
+            None,
+            Some(Adapter::Claude),
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].created_file_count, 1);
+        assert_eq!(summaries[0].updated_file_count, 0);
+        assert_eq!(summaries[1].created_file_count, 0);
+        assert_eq!(summaries[1].updated_file_count, 1);
+        assert!(
+            fs::read_to_string(linked_repo.join("skills/review/SKILL.md"))
+                .unwrap()
+                .ends_with("\nReview relay update.\n")
+        );
+        assert!(
+            fs::read_to_string(linked_repo.join("skills/checks/SKILL.md"))
+                .unwrap()
+                .ends_with("\nChecks relay update.\n")
+        );
+    }
+
+    #[test]
+    fn relay_batch_rejects_overlapping_write_sets() {
+        let (_remote_root, remote_repo) = create_versioned_dependency_with_same_skill();
+        let linked = clone_linked_repo(&remote_repo);
+        let linked_repo = linked.path().join("linked");
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_file(
+            &project.path().join("nodus.toml"),
+            &format!(
+                r#"
+[adapters]
+enabled = ["claude"]
+
+[dependencies.review_v1]
+url = "{}"
+tag = "v0.1.0"
+
+[dependencies.review_v2]
+url = "{}"
+tag = "v0.2.0"
+"#,
+                toml_path_value(&remote_repo),
+                toml_path_value(&remote_repo)
+            ),
+        );
+        sync_project(project.path(), cache.path(), &[Adapter::Claude]);
+
+        let review_v1 = resolved_package_by_alias(
+            project.path(),
+            cache.path(),
+            &[Adapter::Claude],
+            "review_v1",
+        );
+        let review_v2 = resolved_package_by_alias(
+            project.path(),
+            cache.path(),
+            &[Adapter::Claude],
+            "review_v2",
+        );
+
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "review_v1",
+            Some(&linked_repo),
+            Some(Adapter::Claude),
+            &Reporter::silent(),
+        )
+        .unwrap();
+        relay_dependency_in_dir(
+            project.path(),
+            cache.path(),
+            "review_v2",
+            Some(&linked_repo),
+            Some(Adapter::Claude),
+            &Reporter::silent(),
+        )
+        .unwrap();
+
+        append_file(
+            &managed_skill_root(project.path(), Adapter::Claude, &review_v1, "review")
+                .join("SKILL.md"),
+            "\nReview v1 relay update.\n",
+        );
+        append_file(
+            &managed_skill_root(project.path(), Adapter::Claude, &review_v2, "review")
+                .join("SKILL.md"),
+            "\nReview v2 relay update.\n",
+        );
+
+        let error = super::relay_dependencies_in_dir(
+            project.path(),
+            cache.path(),
+            &["review_v1".into(), "review_v2".into()],
+            None,
+            Some(Adapter::Claude),
+            false,
+            &Reporter::silent(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("both write"));
+        assert!(error.contains("skills/review/SKILL.md"));
+    }
+
+    #[test]
     fn relay_watch_syncs_follow_up_managed_edits() {
         let (_remote_root, remote_repo) = create_remote_dependency();
         let linked = clone_linked_repo(&remote_repo);
@@ -2049,14 +2896,17 @@ tag = {:?}
                 &project_root,
                 &cache_root,
                 "playbook_ios",
-                Some(&linked_repo_for_watch),
-                None,
-                &Reporter::sink(ColorMode::Never, output_for_watch),
-                RelayWatchOptions {
-                    poll_interval: Duration::from_millis(20),
-                    max_events: Some(2),
-                    max_polls: Some(200),
+                RelayWatchInvocation {
+                    repo_path_override: Some(&linked_repo_for_watch),
+                    via_override: None,
+                    create_missing: false,
+                    options: RelayWatchOptions {
+                        poll_interval: Duration::from_millis(20),
+                        max_events: Some(2),
+                        max_polls: Some(200),
+                    },
                 },
+                &Reporter::sink(ColorMode::Never, output_for_watch),
             )
             .unwrap()
         });
@@ -2113,14 +2963,17 @@ tag = {:?}
                 &project_root,
                 &cache_root,
                 "playbook_ios",
-                Some(&linked_repo_for_watch),
-                None,
-                &Reporter::sink(ColorMode::Never, output_for_watch),
-                RelayWatchOptions {
-                    poll_interval: Duration::from_millis(20),
-                    max_events: Some(3),
-                    max_polls: Some(400),
+                RelayWatchInvocation {
+                    repo_path_override: Some(&linked_repo_for_watch),
+                    via_override: None,
+                    create_missing: false,
+                    options: RelayWatchOptions {
+                        poll_interval: Duration::from_millis(20),
+                        max_events: Some(3),
+                        max_polls: Some(400),
+                    },
                 },
+                &Reporter::sink(ColorMode::Never, output_for_watch),
             )
             .unwrap()
         });
@@ -2242,13 +3095,17 @@ tag = {:?}
                 &project_root,
                 &cache_root,
                 &watch_packages,
-                None,
-                &Reporter::sink(ColorMode::Never, output_for_watch),
-                RelayWatchOptions {
-                    poll_interval: Duration::from_millis(20),
-                    max_events: Some(3),
-                    max_polls: Some(200),
+                RelayWatchInvocation {
+                    repo_path_override: None,
+                    via_override: None,
+                    create_missing: false,
+                    options: RelayWatchOptions {
+                        poll_interval: Duration::from_millis(20),
+                        max_events: Some(3),
+                        max_polls: Some(200),
+                    },
                 },
+                &Reporter::sink(ColorMode::Never, output_for_watch),
             )
             .unwrap()
         });

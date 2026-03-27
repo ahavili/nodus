@@ -46,24 +46,28 @@ impl Default for RelayWatchOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RelayWatchInvocation<'a> {
+    pub(super) repo_path_override: Option<&'a Path>,
+    pub(super) via_override: Option<Adapter>,
+    pub(super) create_missing: bool,
+    pub(super) options: RelayWatchOptions,
+}
+
 pub(super) fn watch_dependency_in_dir_with_options(
     project_root: &Path,
     cache_root: &Path,
     package: &str,
-    repo_path_override: Option<&Path>,
-    via_override: Option<Adapter>,
+    invocation: RelayWatchInvocation<'_>,
     reporter: &Reporter,
-    options: RelayWatchOptions,
 ) -> Result<Vec<RelaySummary>> {
     let packages = vec![package.to_string()];
     watch_dependencies_in_dir_impl_with_options(
         project_root,
         cache_root,
         &packages,
-        repo_path_override,
-        via_override,
+        invocation,
         reporter,
-        options,
     )
 }
 
@@ -71,18 +75,15 @@ pub(super) fn watch_dependencies_in_dir_with_options(
     project_root: &Path,
     cache_root: &Path,
     packages: &[String],
-    via_override: Option<Adapter>,
+    invocation: RelayWatchInvocation<'_>,
     reporter: &Reporter,
-    options: RelayWatchOptions,
 ) -> Result<Vec<RelaySummary>> {
     watch_dependencies_in_dir_impl_with_options(
         project_root,
         cache_root,
         packages,
-        None,
-        via_override,
+        invocation,
         reporter,
-        options,
     )
 }
 
@@ -90,15 +91,13 @@ fn watch_dependencies_in_dir_impl_with_options(
     project_root: &Path,
     cache_root: &Path,
     packages: &[String],
-    repo_path_override: Option<&Path>,
-    via_override: Option<Adapter>,
+    invocation: RelayWatchInvocation<'_>,
     reporter: &Reporter,
-    options: RelayWatchOptions,
 ) -> Result<Vec<RelaySummary>> {
     if packages.is_empty() {
         bail!("relay watch requires at least one dependency");
     }
-    if packages.len() > 1 && repo_path_override.is_some() {
+    if packages.len() > 1 && invocation.repo_path_override.is_some() {
         bail!("`nodus relay --repo-path` requires exactly one dependency");
     }
 
@@ -108,14 +107,16 @@ fn watch_dependencies_in_dir_impl_with_options(
             project_root,
             cache_root,
             package,
-            repo_path_override,
-            via_override,
+            invocation.repo_path_override,
+            invocation.via_override,
+            invocation.create_missing,
             reporter,
         )?;
         reporter.finish(format!(
-            "relayed {} into {}; updated {} source files",
+            "relayed {} into {}; created {} and updated {} source files",
             summary.alias,
             display_relative(project_root, &summary.linked_repo),
+            summary.created_file_count,
             summary.updated_file_count,
         ))?;
         summaries.push(summary);
@@ -126,20 +127,22 @@ fn watch_dependencies_in_dir_impl_with_options(
     let mut polls = 0usize;
 
     loop {
-        if options
+        if invocation
+            .options
             .max_events
             .is_some_and(|max_events| summaries.len() >= max_events)
         {
             return Ok(summaries);
         }
-        if options
+        if invocation
+            .options
             .max_polls
             .is_some_and(|max_polls| polls >= max_polls)
         {
             return Ok(summaries);
         }
 
-        thread::sleep(options.poll_interval);
+        thread::sleep(invocation.options.poll_interval);
         polls += 1;
 
         let next_state = capture_watch_state(project_root, cache_root, packages, reporter)?;
@@ -157,12 +160,20 @@ fn watch_dependencies_in_dir_impl_with_options(
 
         for package in changed_packages {
             reporter.status("Watching", format!("detected managed edits for {package}"))?;
-            let summary =
-                relay_dependency_in_dir(project_root, cache_root, &package, None, None, reporter)?;
+            let summary = relay_dependency_in_dir(
+                project_root,
+                cache_root,
+                &package,
+                None,
+                None,
+                invocation.create_missing,
+                reporter,
+            )?;
             reporter.finish(format!(
-                "relayed {} into {}; updated {} source files",
+                "relayed {} into {}; created {} and updated {} source files",
                 summary.alias,
                 display_relative(project_root, &summary.linked_repo),
+                summary.created_file_count,
                 summary.updated_file_count,
             ))?;
             summaries.push(summary);
@@ -197,6 +208,7 @@ fn capture_watch_state(
         let linked_repo = resolve_existing_link(&workspace.local_config, &dependency)?;
         let mappings = build_mappings(
             &managed_names,
+            &workspace.resolution.packages,
             &dependency,
             &workspace.project_root,
             workspace.selected_adapters,

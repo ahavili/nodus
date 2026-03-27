@@ -217,6 +217,11 @@ pub(super) enum Command {
             help = "Preview project changes without writing to the project or linked repo; may still populate the shared store to compute the result"
         )]
         dry_run: bool,
+        #[arg(
+            long = "create-missing",
+            help = "Create missing source skills and agents in the linked maintainer checkout from managed runtime files"
+        )]
+        create_missing: bool,
     },
     #[command(about = "Create a minimal nodus.toml and example skill")]
     Init {

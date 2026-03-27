@@ -85,6 +85,7 @@ pub(super) fn run_command_in_dir(
             via,
             watch,
             dry_run,
+            create_missing,
         } => project::handle_relay(
             &context,
             project::RelayCommand {
@@ -93,6 +94,7 @@ pub(super) fn run_command_in_dir(
                 via,
                 watch,
                 dry_run,
+                create_missing,
             },
         ),
         Command::Init { dry_run } => project::handle_init(&context, dry_run),

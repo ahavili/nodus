@@ -350,6 +350,19 @@ fn parses_relay_via_aliases() {
 }
 
 #[test]
+fn parses_relay_create_missing_flag() {
+    let cli = Cli::try_parse_from(["nodus", "relay", "example/repo", "--create-missing"]).unwrap();
+
+    assert!(matches!(
+        cli.command,
+        Command::Relay {
+            create_missing: true,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn parses_update_subcommand() {
     let cli = Cli::try_parse_from(["nodus", "update", "--allow-high-sensitivity"]).unwrap();
 
@@ -1470,6 +1483,7 @@ fn relay_dry_run_does_not_persist_local_config_or_repo_edits() {
             via: Some(Adapter::Claude),
             watch: false,
             dry_run: true,
+            create_missing: false,
         },
         temp.path(),
         cache.path(),
@@ -1534,6 +1548,7 @@ fn relay_dry_run_previews_state_only_local_config_changes() {
             via: None,
             watch: false,
             dry_run: false,
+            create_missing: false,
         },
         temp.path(),
         cache.path(),
@@ -1558,6 +1573,7 @@ fn relay_dry_run_previews_state_only_local_config_changes() {
             via: None,
             watch: false,
             dry_run: true,
+            create_missing: false,
         },
         temp.path(),
         cache.path(),
@@ -1584,6 +1600,7 @@ fn relay_rejects_repo_path_for_multiple_dependencies() {
             via: None,
             watch: false,
             dry_run: false,
+            create_missing: false,
         },
         temp.path(),
         cache.path(),
@@ -1711,6 +1728,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             via: Some(Adapter::Claude),
             watch: false,
             dry_run: false,
+            create_missing: false,
         },
         temp.path(),
         cache.path(),
@@ -1724,6 +1742,7 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             via: Some(Adapter::Claude),
             watch: false,
             dry_run: false,
+            create_missing: false,
         },
         temp.path(),
         cache.path(),
@@ -1751,12 +1770,13 @@ fn relay_supports_multiple_dependencies_in_one_command() {
             via: Some(Adapter::Claude),
             watch: false,
             dry_run: false,
+            create_missing: false,
         },
         temp.path(),
         cache.path(),
     );
 
-    assert!(output.contains("relayed 2 dependencies; updated 2 source files"));
+    assert!(output.contains("relayed 2 dependencies; created 0 and updated 2 source files"));
     assert!(
         fs::read_to_string(linked_one.path().join("linked/skills/review/SKILL.md"))
             .unwrap()

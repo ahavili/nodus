@@ -11,6 +11,7 @@ pub(crate) struct RelayCommand {
     pub(crate) via: Option<Adapter>,
     pub(crate) watch: bool,
     pub(crate) dry_run: bool,
+    pub(crate) create_missing: bool,
 }
 
 pub(crate) struct SyncCommand {
@@ -53,6 +54,7 @@ pub(crate) fn handle_relay(
         via,
         watch,
         dry_run,
+        create_missing,
     } = command;
 
     if packages.len() > 1 {
@@ -70,6 +72,7 @@ pub(crate) fn handle_relay(
                 &packages[0],
                 repo_path.as_deref(),
                 via,
+                create_missing,
                 context.reporter,
             )
         } else {
@@ -78,65 +81,72 @@ pub(crate) fn handle_relay(
                 context.cache_root,
                 &packages,
                 via,
+                create_missing,
                 context.reporter,
             )
         }
     } else {
-        let mut summaries = Vec::with_capacity(packages.len());
-        for package in &packages {
-            let summary = if dry_run {
-                crate::relay::relay_dependency_in_dir_dry_run(
-                    context.cwd,
-                    context.cache_root,
-                    package,
-                    repo_path.as_deref(),
-                    via,
-                    context.reporter,
-                )?
-            } else {
-                crate::relay::relay_dependency_in_dir(
-                    context.cwd,
-                    context.cache_root,
-                    package,
-                    repo_path.as_deref(),
-                    via,
-                    context.reporter,
-                )?
-            };
-            summaries.push(summary);
-        }
+        let summaries = if dry_run {
+            crate::relay::relay_dependencies_in_dir_dry_run(
+                context.cwd,
+                context.cache_root,
+                &packages,
+                repo_path.as_deref(),
+                via,
+                create_missing,
+                context.reporter,
+            )?
+        } else {
+            crate::relay::relay_dependencies_in_dir(
+                context.cwd,
+                context.cache_root,
+                &packages,
+                repo_path.as_deref(),
+                via,
+                create_missing,
+                context.reporter,
+            )?
+        };
 
         let message = if let [summary] = summaries.as_slice() {
             if dry_run {
                 format!(
-                    "dry run: would relay {} into {}; would update {} source files",
+                    "dry run: would relay {} into {}; would create {} and update {} source files",
                     summary.alias,
                     display_path(&summary.linked_repo),
+                    summary.created_file_count,
                     summary.updated_file_count,
                 )
             } else {
                 format!(
-                    "relayed {} into {}; updated {} source files",
+                    "relayed {} into {}; created {} and updated {} source files",
                     summary.alias,
                     display_path(&summary.linked_repo),
+                    summary.created_file_count,
                     summary.updated_file_count,
                 )
             }
         } else {
+            let created_file_count = summaries
+                .iter()
+                .map(|summary| summary.created_file_count)
+                .sum::<usize>();
             let updated_file_count = summaries
                 .iter()
                 .map(|summary| summary.updated_file_count)
                 .sum::<usize>();
             if dry_run {
                 format!(
-                    "dry run: would relay {} dependencies; would update {} source files",
+                    "dry run: would relay {} dependencies; would create {} and update {} source files",
                     summaries.len(),
+                    created_file_count,
                     updated_file_count,
                 )
             } else {
                 format!(
-                    "relayed {} dependencies; updated {} source files",
+                    "relayed {} dependencies; created {} and updated {} source files",
                     summaries.len(),
+                    created_file_count,
                     updated_file_count,
                 )
             }
