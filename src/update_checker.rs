@@ -934,6 +934,17 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("install.ps1")
     }
 
+    fn pwsh_available() -> bool {
+        ProcessCommand::new("pwsh")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$PSVersionTable.PSVersion.ToString()",
+            ])
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
     #[test]
     fn parses_release_tags_with_or_without_a_v_prefix() {
         assert_eq!(
@@ -1745,6 +1756,10 @@ HTTP/2 200 \r\n\
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn powershell_install_script_handles_windows_release_assets_from_flat_zip_root() {
+        if !pwsh_available() {
+            return;
+        }
+
         let temp = tempfile::TempDir::new().unwrap();
         let install_dir = temp.path().join("install");
         let asset_dir = temp.path().join("assets");
