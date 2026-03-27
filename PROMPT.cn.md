@@ -131,9 +131,22 @@ git ls-remote <仓库地址> HEAD
 
 对普通用户，优先走最简单路径：
 
-1. 进入项目根目录
-2. 用 `nodus add <package> --adapter <adapter>` 安装
-3. 用 `nodus doctor` 确认结果
+1. 如果用户只是想“先装好、先能用、最好一站式做完”，并且没有明确指定别的包，默认安装 `WendellXY/nodus`
+2. 对这类小白用户，默认优先考虑**全局安装**
+3. 只有当用户明确说“装到当前仓库里”或明确要当前仓库可复现时，才改用当前项目安装
+
+推荐默认路径：
+
+```bash
+nodus add WendellXY/nodus --global --adapter codex
+```
+
+如果用户明确要按当前仓库管理，再使用：
+
+```bash
+nodus add WendellXY/nodus --adapter codex
+nodus doctor
+```
 
 ### 常用命令
 
@@ -153,6 +166,12 @@ nodus add ./vendor/agent-package --adapter claude
 
 ```bash
 nodus add WendellXY/nodus --adapter codex
+```
+
+如果用户没有强调“当前仓库”，而是想一站式直接可用，优先给：
+
+```bash
+nodus add WendellXY/nodus --global --adapter codex
 ```
 
 ### 可选安装方式
@@ -403,6 +422,7 @@ nodus doctor
 
 - “我想全局安装，所有项目都能用”
 - “不要只装在当前仓库”
+- “先帮我装一个最推荐的，直接能用就行”
 
 ### 命令
 
@@ -416,7 +436,19 @@ nodus add owner/repo --global --adapter codex
 nodus remove nodus --global
 ```
 
-只有当用户明确说“全局安装”时，才使用 `--global`。否则默认按当前仓库处理。
+对这个文档面对的小白用户，如果他只是想“先用起来”、又没有明确要求项目级安装，默认优先推荐：
+
+```bash
+nodus add WendellXY/nodus --global --adapter codex
+```
+
+只有当用户明确要：
+
+- 当前仓库可复现
+- 团队成员也跟着同一个仓库配置走
+- 或者要安装的并不是 `WendellXY/nodus`
+
+才默认改为当前仓库处理，而不是全局安装。
 
 ---
 
@@ -668,10 +700,10 @@ nodus relay dep-a dep-b
 1. 先检查仓库角色和用户意图，再给命令。
 2. 能推断的就推断，推断不了再问最少的问题。
 3. 对普通用户，默认：
-   - 全包安装
+   - 如果只是想一站式先用起来，默认 `nodus add WendellXY/nodus --global --adapter <adapter>`
    - 单一 adapter
-   - `nodus add` 或 `nodus sync`
-   - 最后跑 `nodus doctor`
+   - 只有在明确要求项目级管理时，才默认 `nodus add <package> --adapter <adapter>`
+   - 项目级安装完成后，最后跑 `nodus doctor`
 4. 不要让用户手工复制受管理文件。
 5. 不要把 `nodus.toml`、`nodus.lock`、adapter 输出目录的角色说反。
 6. 如果有风险项（高敏感能力、私有仓库权限、全局安装），先解释再执行。
