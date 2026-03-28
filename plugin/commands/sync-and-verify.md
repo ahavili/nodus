@@ -8,6 +8,7 @@ Use this after installing, updating, or removing a package.
 
 ```bash
 nodus sync
+nodus sync --force
 nodus doctor
 ```
 
@@ -21,6 +22,7 @@ nodus sync --frozen
 ## When To Use Which
 
 - Use `nodus sync` after manifest changes or package updates.
+- Use `nodus sync --force` only when you want sync to overwrite unmanaged files at paths Nodus is about to manage.
 - Use `nodus sync --locked` in CI when `nodus.lock` is expected to already be current.
 - Use `nodus sync --frozen` when you must install the exact Git revisions already written in `nodus.lock`.
 - Always finish with `nodus doctor` when debugging drift or validating a fresh setup.

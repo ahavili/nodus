@@ -118,7 +118,7 @@ target = "docs/templates"
 # - supported only for direct dependencies declared in the root `nodus.toml`
 # - source paths must stay inside the dependency root
 # - overlapping managed targets are rejected
-# - unmanaged file collisions are rejected instead of overwritten
+# - unmanaged file collisions are rejected unless you rerun `nodus sync --force`
 
 [dev-dependencies]
 # Use this section for packages you want Nodus to resolve in the current repo,

@@ -262,6 +262,12 @@ nodus update
 nodus sync
 ```
 
+如果你明确要让本次同步覆盖即将由 Nodus 管理的现有文件：
+
+```bash
+nodus sync --force
+```
+
 如果你的流程要求 lockfile 不允许变化：
 
 ```bash
@@ -357,6 +363,7 @@ pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 可以把它们简单理解成：
 
 - `nodus sync`：按你现在已经记录好的内容，重新同步一遍
+- `nodus sync --force`：同步时，覆盖这次即将由 Nodus 接管的冲突文件
 - `nodus update`：先去找允许范围内的新版本，再同步到新结果
 
 如果你只是改了仓库内容、想重新生成受管理文件，通常用 `sync`。

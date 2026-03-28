@@ -215,6 +215,12 @@ Rebuild managed files from what is already recorded:
 nodus sync
 ```
 
+Overwrite an unmanaged path when this sync is about to manage it:
+
+```bash
+nodus sync --force
+```
+
 Use these in CI:
 
 ```bash
@@ -303,6 +309,8 @@ pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 ## When To Use `sync` vs `update`
 
 Use `nodus sync` when you want Nodus to make the repo match your current manifest and lockfile.
+
+Use `nodus sync --force` when you want that sync to overwrite unmanaged files at paths Nodus is about to manage.
 
 Use `nodus update` when you want Nodus to look for newer allowed versions first, then sync to those newer results.
 
@@ -405,7 +413,7 @@ This is an advanced workflow. Most users only need `add`, `info`, `outdated`, `u
 - one command to add repo-scoped AI tooling
 - exact revisions locked in `nodus.lock`
 - generated files stay managed and pruneable
-- unmanaged files are never overwritten
+- unmanaged files are protected unless you explicitly run `nodus sync --force`
 - mirrors, checkouts, and snapshots are shared across repos
 
 ## Contributing
