@@ -44,6 +44,7 @@ struct ResolvePackageInput {
     source: PackageSource,
     role: PackageRole,
     selected_components: Option<Vec<DependencyComponent>>,
+    selected_workspace_members: Option<Vec<String>>,
     incoming_managed_paths: Vec<ResolvedManagedPath>,
     extra_package_files: Vec<PathBuf>,
     manifest_override: Option<LoadedManifest>,
@@ -107,6 +108,7 @@ pub(super) fn resolve_project(
             source: PackageSource::Root,
             role: PackageRole::Root,
             selected_components: None,
+            selected_workspace_members: None,
             incoming_managed_paths: Vec::new(),
             extra_package_files: Vec::new(),
             manifest_override: None,
@@ -144,6 +146,7 @@ fn resolve_package(
         source,
         role,
         selected_components,
+        selected_workspace_members,
         incoming_managed_paths,
         extra_package_files,
         manifest_override,
@@ -151,6 +154,10 @@ fn resolve_package(
     if let Some(existing) = state.resolved_by_path.get_mut(&package_root) {
         existing.selected_components =
             union_selected_components(existing.selected_components.clone(), selected_components);
+        existing.selected_workspace_members = union_selected_workspace_members(
+            existing.selected_workspace_members.clone(),
+            selected_workspace_members,
+        );
         if !incoming_managed_paths.is_empty() {
             existing.managed_paths = merge_managed_paths(
                 &package_root,
@@ -213,7 +220,13 @@ fn resolve_package(
         .manifest
         .active_dependency_entries_for_role(role)
         .into_iter()
-        .map(|entry| resolve_dependency(&manifest, role, entry.alias, entry.spec, context, state))
+        .map(|entry| (entry.alias.to_string(), entry.spec.clone()))
+        .chain(workspace_member_dependencies(
+            &manifest,
+            role,
+            selected_workspace_members.clone(),
+        )?)
+        .map(|(alias, spec)| resolve_dependency(&manifest, role, &alias, &spec, context, state))
         .collect::<Result<Vec<_>>>()?;
 
     let digest = compute_package_digest(&manifest, &extra_package_files)?;
@@ -224,6 +237,7 @@ fn resolve_package(
         source,
         digest,
         selected_components,
+        selected_workspace_members,
         managed_paths,
         extra_package_files,
     };
@@ -259,6 +273,11 @@ fn resolve_dependency(
                 tag: dependency.tag.clone(),
             };
             let dependency_manifest = load_dependency_from_dir(&dependency_root)?;
+            if dependency_manifest.manifest.workspace.is_none() && dependency.members.is_some() {
+                bail!(
+                    "dependency `{alias}` field `members` is supported only for workspace dependencies"
+                );
+            }
             let (incoming_managed_paths, extra_package_files, managed_migration) =
                 resolve_incoming_managed_paths(
                     parent_role,
@@ -278,6 +297,7 @@ fn resolve_dependency(
                     source,
                     role: PackageRole::Dependency,
                     selected_components: dependency.effective_selected_components(),
+                    selected_workspace_members: dependency.explicit_members_sorted(),
                     incoming_managed_paths,
                     extra_package_files,
                     manifest_override: Some(dependency_manifest),
@@ -321,6 +341,11 @@ fn resolve_dependency(
                 rev: checkout.rev,
             };
             let dependency_manifest = load_dependency_from_dir(&checkout.path)?;
+            if dependency_manifest.manifest.workspace.is_none() && dependency.members.is_some() {
+                bail!(
+                    "dependency `{alias}` field `members` is supported only for workspace dependencies"
+                );
+            }
             let (incoming_managed_paths, extra_package_files, managed_migration) =
                 resolve_incoming_managed_paths(
                     parent_role,
@@ -340,6 +365,7 @@ fn resolve_dependency(
                     source,
                     role: PackageRole::Dependency,
                     selected_components: dependency.effective_selected_components(),
+                    selected_workspace_members: dependency.explicit_members_sorted(),
                     incoming_managed_paths,
                     extra_package_files,
                     manifest_override: Some(dependency_manifest),
@@ -429,6 +455,81 @@ fn union_selected_components(
             Some(left)
         }
     }
+}
+
+fn union_selected_workspace_members(
+    left: Option<Vec<String>>,
+    right: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    match (left, right) {
+        (None, None) => None,
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (Some(mut left), Some(right)) => {
+            left.extend(right);
+            left.sort();
+            left.dedup();
+            Some(left)
+        }
+    }
+}
+
+fn workspace_member_dependencies(
+    manifest: &LoadedManifest,
+    role: PackageRole,
+    selected_members: Option<Vec<String>>,
+) -> Result<Vec<(String, DependencySpec)>> {
+    let workspace_members = manifest.resolved_workspace_members()?;
+    if workspace_members.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let selected = match role {
+        PackageRole::Root => workspace_members
+            .iter()
+            .map(|member| member.id.clone())
+            .collect::<Vec<_>>(),
+        PackageRole::Dependency => {
+            let requested = selected_members.unwrap_or_default();
+            let available = workspace_members
+                .iter()
+                .map(|member| member.id.as_str())
+                .collect::<HashSet<_>>();
+            for member in &requested {
+                if !available.contains(member.as_str()) {
+                    bail!(
+                        "workspace dependency selects unknown member `{member}` in {}",
+                        manifest.root.display()
+                    );
+                }
+            }
+            requested
+        }
+    };
+
+    let selected = selected.into_iter().collect::<HashSet<_>>();
+    Ok(workspace_members
+        .into_iter()
+        .filter(|member| selected.contains(&member.id))
+        .map(|member| {
+            (
+                member.id,
+                DependencySpec {
+                    github: None,
+                    url: None,
+                    path: Some(member.path),
+                    tag: None,
+                    branch: None,
+                    revision: None,
+                    version: None,
+                    components: None,
+                    members: None,
+                    managed: None,
+                    enabled: true,
+                },
+            )
+        })
+        .collect())
 }
 
 fn resolve_incoming_managed_paths(

@@ -37,6 +37,7 @@ pub struct PackageInfo {
     root: PathBuf,
     source: PackageInfoSource,
     selected_components: Option<Vec<DependencyComponent>>,
+    workspace_members: Vec<PackageWorkspaceMember>,
     adapters: Vec<Adapter>,
     skills: Vec<String>,
     agents: Vec<String>,
@@ -80,6 +81,12 @@ struct PackageManagedExport {
     target: String,
     placement: String,
     resolved_root: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PackageWorkspaceMember {
+    id: String,
+    enabled: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -195,6 +202,7 @@ fn load_package_info(
             true,
             None,
             None,
+            None,
             role,
         ));
     }
@@ -226,6 +234,7 @@ fn load_package_info(
             rev: checkout.rev,
         },
         true,
+        None,
         None,
         None,
         role,
@@ -278,6 +287,7 @@ fn load_from_dependency_spec(
         source,
         target.enabled,
         target.selected_components,
+        target.selected_workspace_members,
         target.version_requirement,
         target.role,
     ))
@@ -293,6 +303,7 @@ fn package_info_from_loaded(
     source: PackageInfoSource,
     enabled: bool,
     selected_components: Option<Vec<DependencyComponent>>,
+    selected_workspace_members: Option<Vec<String>>,
     version_requirement: Option<String>,
     role: PackageRole,
 ) -> PackageInfo {
@@ -323,6 +334,21 @@ fn package_info_from_loaded(
         Vec::new()
     };
     dev_dependencies.sort();
+    let selected_workspace_members = selected_workspace_members
+        .unwrap_or_else(|| {
+            if role == PackageRole::Root {
+                manifest
+                    .resolved_workspace_members()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|member| member.id)
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        })
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
 
     PackageInfo {
         alias,
@@ -350,6 +376,15 @@ fn package_info_from_loaded(
         root: manifest.root.clone(),
         source,
         selected_components,
+        workspace_members: manifest
+            .resolved_workspace_members()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|member| PackageWorkspaceMember {
+                enabled: selected_workspace_members.contains(&member.id),
+                id: member.id,
+            })
+            .collect(),
         adapters,
         skills: manifest
             .discovered
@@ -552,6 +587,14 @@ impl PackageInfo {
             lines.extend(render_managed_export_lines(reporter, &self.managed_exports));
         }
 
+        if !self.workspace_members.is_empty() {
+            lines.push(paint_label(reporter, "workspace-members:"));
+            lines.extend(render_workspace_member_lines(
+                reporter,
+                &self.workspace_members,
+            ));
+        }
+
         if !self.mcp_servers.is_empty() {
             lines.push(format!(
                 "{} {}",
@@ -630,6 +673,28 @@ impl PackageInfo {
             }
         }
     }
+}
+
+fn render_workspace_member_lines(
+    reporter: &Reporter,
+    members: &[PackageWorkspaceMember],
+) -> Vec<String> {
+    members
+        .iter()
+        .map(|member| {
+            let status = if member.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            let status = if member.enabled {
+                reporter.paint(status, label_style())
+            } else {
+                reporter.paint(status, dim_style())
+            };
+            format!("  {} ({status})", member.id)
+        })
+        .collect()
 }
 
 fn render_named_lists(reporter: &Reporter, items: &[(&str, &Vec<String>)]) -> Vec<String> {
@@ -881,6 +946,26 @@ mod tests {
         run(&["commit", "-m", "initial"]);
     }
 
+    fn write_workspace_package(path: &Path) {
+        write_file(
+            &path.join("nodus.toml"),
+            r#"
+[workspace]
+members = ["plugins/axiom", "plugins/firebase"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+
+[workspace.package.firebase]
+path = "plugins/firebase"
+name = "Firebase"
+"#,
+        );
+        write_skill(&path.join("plugins/axiom"), "Axiom");
+        write_skill(&path.join("plugins/firebase"), "Firebase");
+    }
+
     fn capture_info_output(
         cwd: &Path,
         cache_root: &Path,
@@ -972,6 +1057,39 @@ api_version = "1"
         assert!(output.contains("artifacts:\n  skills = [review]"));
         assert!(output.contains("features:\n +default"));
         assert!(output.contains("  test-utils = []"));
+    }
+
+    #[test]
+    fn info_shows_workspace_members_for_workspace_root() {
+        let package = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_workspace_package(package.path());
+
+        let output = capture_info_output(package.path(), cache.path(), ".", None, None);
+
+        assert!(output.contains("workspace-members:"));
+        assert!(output.contains("axiom (enabled)"));
+        assert!(output.contains("firebase (enabled)"));
+    }
+
+    #[test]
+    fn info_shows_disabled_workspace_members_when_dependency_members_are_omitted() {
+        let project = TempDir::new().unwrap();
+        let cache = TempDir::new().unwrap();
+        write_workspace_package(&project.path().join("vendor/wrapper"));
+        write_file(
+            &project.path().join("nodus.toml"),
+            r#"
+[dependencies.wrapper]
+path = "vendor/wrapper"
+"#,
+        );
+
+        let output = capture_info_output(project.path(), cache.path(), "wrapper", None, None);
+
+        assert!(output.contains("workspace-members:"));
+        assert!(output.contains("axiom (disabled)"));
+        assert!(output.contains("firebase (disabled)"));
     }
 
     #[test]

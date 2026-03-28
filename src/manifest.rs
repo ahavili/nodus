@@ -13,6 +13,7 @@ pub use load::{
     serialize_manifest,
 };
 pub use model_impls::RequestedGitRef;
+#[allow(unused_imports)]
 pub use types::{
     AdapterConfig, Capability, DependencyComponent, DependencyEntry, DependencyKind,
     DependencySourceKind, DependencySpec, FileEntry, InitSummary, LaunchHookConfig, LoadedManifest,

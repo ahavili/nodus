@@ -37,6 +37,8 @@ pub struct AddSummary {
     pub reference: String,
     pub adapters: Vec<Adapter>,
     pub managed_file_count: usize,
+    pub dependency_preview: String,
+    pub workspace_members: Vec<WorkspaceMemberStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +46,12 @@ pub struct RemoveSummary {
     pub alias: String,
     pub kind: DependencyKind,
     pub managed_file_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceMemberStatus {
+    pub id: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -150,8 +158,16 @@ fn add_dependency_at_paths_with_adapters_mode(
     let checkout =
         ensure_git_dependency(cache_root, &normalized_url, options.git_ref, true, reporter)?;
     let github = github_slug_from_url(&checkout.url);
-    load_dependency_from_dir(&checkout.path)
+    let dependency_manifest = load_dependency_from_dir(&checkout.path)
         .with_context(|| format!("dependency `{alias}` does not match the Nodus package layout"))?;
+    let workspace_members = dependency_manifest
+        .resolved_workspace_members()?
+        .into_iter()
+        .map(|member| WorkspaceMemberStatus {
+            id: member.id,
+            enabled: true,
+        })
+        .collect::<Vec<_>>();
 
     let mut root = load_root_from_dir_allow_missing(&install_paths.config_root)?;
     if root.manifest.contains_dependency_alias(&alias) {
@@ -168,34 +184,40 @@ fn add_dependency_at_paths_with_adapters_mode(
             install_paths.config_root.join(MANIFEST_FILE).display()
         ),
     )?;
-    root.manifest.dependency_section_mut(options.kind).insert(
-        alias.clone(),
-        DependencySpec {
-            github: github.clone(),
-            url: github.is_none().then_some(checkout.url.clone()),
-            path: None,
-            tag: options
-                .version_req
-                .is_none()
-                .then_some(checkout.tag.clone())
-                .flatten(),
-            branch: checkout.branch.clone(),
-            revision: options.git_ref.and_then(|git_ref| match git_ref {
-                RequestedGitRef::Revision(_) => Some(checkout.rev.clone()),
-                _ => None,
-            }),
-            version: options.version_req.clone(),
-            components: (!options.components.is_empty()).then(|| {
-                let mut sorted = options.components.to_vec();
-                sorted.sort();
-                sorted.dedup();
-                sorted
-            }),
-            members: None,
-            managed: None,
-            enabled: true,
-        },
-    );
+    let dependency = DependencySpec {
+        github: github.clone(),
+        url: github.is_none().then_some(checkout.url.clone()),
+        path: None,
+        tag: options
+            .version_req
+            .is_none()
+            .then_some(checkout.tag.clone())
+            .flatten(),
+        branch: checkout.branch.clone(),
+        revision: options.git_ref.and_then(|git_ref| match git_ref {
+            RequestedGitRef::Revision(_) => Some(checkout.rev.clone()),
+            _ => None,
+        }),
+        version: options.version_req.clone(),
+        components: (!options.components.is_empty()).then(|| {
+            let mut sorted = options.components.to_vec();
+            sorted.sort();
+            sorted.dedup();
+            sorted
+        }),
+        members: (!workspace_members.is_empty()).then(|| {
+            workspace_members
+                .iter()
+                .map(|member| member.id.clone())
+                .collect::<Vec<_>>()
+        }),
+        managed: None,
+        enabled: true,
+    };
+    let dependency_preview = format!("{alias} = {{ {} }}", dependency.inline_fields().join(", "));
+    root.manifest
+        .dependency_section_mut(options.kind)
+        .insert(alias.clone(), dependency);
     let selection = if install_paths.is_global() {
         if options.sync_on_launch {
             bail!("`nodus add --global` does not support `--sync-on-launch`");
@@ -239,6 +261,8 @@ fn add_dependency_at_paths_with_adapters_mode(
         reference: checkout.reference_display(),
         adapters: sync_summary.adapters,
         managed_file_count: sync_summary.managed_file_count,
+        dependency_preview,
+        workspace_members,
     })
 }
 

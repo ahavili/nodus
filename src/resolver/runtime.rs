@@ -20,7 +20,7 @@ use crate::execution::ExecutionMode;
 use crate::install_paths::{InstallPaths, InstallScope};
 use crate::lockfile::{LOCKFILE_NAME, LockedPackage, LockedSource, Lockfile};
 use crate::manifest::{
-    DependencyComponent, LoadedManifest, ManagedPlacement, PackageRole,
+    DependencyComponent, LoadedManifest, ManagedPlacement, PackageRole, load_dependency_from_dir,
     load_root_from_dir_allow_missing,
 };
 use crate::paths::display_path;
@@ -47,6 +47,7 @@ pub struct ResolvedPackage {
     pub source: PackageSource,
     pub digest: String,
     pub selected_components: Option<Vec<DependencyComponent>>,
+    pub selected_workspace_members: Option<Vec<String>>,
     pub managed_paths: Vec<ResolvedManagedPath>,
     extra_package_files: Vec<PathBuf>,
 }
@@ -515,9 +516,17 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             existing_lockfile.as_ref(),
             true,
         )?;
-        let planned_files = &output_plan.files;
-        let desired_paths =
+        let mut planned_files = output_plan.files.clone();
+        let mut desired_paths =
             resolution.managed_paths(&install_paths.runtime_root, selected_adapters)?;
+        let workspace_marketplace_files =
+            planned_workspace_marketplace_files(&root, &install_paths.runtime_root)?;
+        desired_paths.extend(
+            workspace_marketplace_files
+                .iter()
+                .map(|file| file.path.clone()),
+        );
+        planned_files.extend(workspace_marketplace_files);
         let lockfile = resolution.to_lockfile(selected_adapters, &install_paths.runtime_root)?;
         let mut owned_paths =
             load_owned_paths(&install_paths.runtime_root, existing_lockfile.as_ref())?;
@@ -544,7 +553,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
         }
 
         if let Some(unmanaged_collision) =
-            find_unmanaged_collision(planned_files, &owned_paths, &install_paths.runtime_root)
+            find_unmanaged_collision(&planned_files, &owned_paths, &install_paths.runtime_root)
         {
             if force {
                 reporter.note(format!(
@@ -634,7 +643,7 @@ fn sync_in_dir_with_adapters_mode_and_collision_resolution(
             &install_paths.runtime_root,
             &owned_paths,
             &desired_paths,
-            planned_files,
+            &planned_files,
             resolution
                 .warnings
                 .iter()
@@ -800,13 +809,7 @@ impl Resolution {
                 PackageSource::Root => PackageRole::Root,
                 _ => PackageRole::Dependency,
             };
-            let mut dependencies: Vec<_> = package
-                .manifest
-                .manifest
-                .active_dependency_entries_for_role(package_role)
-                .into_iter()
-                .map(|entry| entry.alias.to_string())
-                .collect();
+            let mut dependencies = package_dependency_aliases(package, package_role)?;
             dependencies.sort();
 
             packages.push(LockedPackage {
@@ -901,11 +904,142 @@ impl Resolution {
             .iter()
             .map(|package| (package.clone(), package.root.clone()))
             .collect::<Vec<_>>();
-        Ok(
+        let mut managed_files =
             build_output_plan(runtime_root, &package_roots, selected_adapters, None, false)?
-                .managed_files,
-        )
+                .managed_files;
+        managed_files.extend(workspace_marketplace_managed_files(self)?);
+        managed_files.sort();
+        managed_files.dedup();
+        Ok(managed_files)
     }
+}
+
+fn package_dependency_aliases(
+    package: &ResolvedPackage,
+    package_role: PackageRole,
+) -> Result<Vec<String>> {
+    let mut dependencies: Vec<_> = package
+        .manifest
+        .manifest
+        .active_dependency_entries_for_role(package_role)
+        .into_iter()
+        .map(|entry| entry.alias.to_string())
+        .collect();
+
+    let workspace_members = package.manifest.resolved_workspace_members()?;
+    if !workspace_members.is_empty() {
+        let selected = match &package.selected_workspace_members {
+            Some(selected) => selected.iter().cloned().collect::<HashSet<_>>(),
+            None if package_role == PackageRole::Root => workspace_members
+                .iter()
+                .map(|member| member.id.clone())
+                .collect::<HashSet<_>>(),
+            None => HashSet::new(),
+        };
+        dependencies.extend(
+            workspace_members
+                .into_iter()
+                .filter(|member| selected.contains(&member.id))
+                .map(|member| member.id),
+        );
+    }
+
+    dependencies.sort();
+    dependencies.dedup();
+    Ok(dependencies)
+}
+
+fn planned_workspace_marketplace_files(
+    root: &LoadedManifest,
+    runtime_root: &Path,
+) -> Result<Vec<ManagedFile>> {
+    if root.manifest.workspace.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let members = root.resolved_workspace_members()?;
+    if members.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    let claude_plugins = members
+        .iter()
+        .map(|member| {
+            let member_root = root.resolve_path(&member.path)?;
+            let manifest = load_dependency_from_dir(&member_root)?;
+            let mut value = serde_json::Map::from_iter([
+                (
+                    "name".to_string(),
+                    serde_json::Value::String(
+                        member
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| manifest.effective_name()),
+                    ),
+                ),
+                (
+                    "source".to_string(),
+                    serde_json::Value::String(display_path(&member.path)),
+                ),
+            ]);
+            if let Some(version) = manifest
+                .effective_version()
+                .map(|version| version.to_string())
+            {
+                value.insert("version".to_string(), serde_json::Value::String(version));
+            }
+            Ok(serde_json::Value::Object(value))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    files.push(ManagedFile {
+        path: runtime_root.join(".claude-plugin/marketplace.json"),
+        contents: serde_json::to_vec_pretty(&serde_json::json!({ "plugins": claude_plugins }))?,
+    });
+
+    if members.iter().all(|member| member.codex.is_some()) {
+        let codex_plugins = members
+            .into_iter()
+            .map(|member| {
+                let codex = member
+                    .codex
+                    .ok_or_else(|| anyhow::anyhow!("missing Codex metadata for {}", member.id))?;
+                Ok(serde_json::json!({
+                    "name": member.name.unwrap_or(member.id),
+                    "source": {
+                        "source": "local",
+                        "path": display_path(&member.path),
+                    },
+                    "policy": {
+                        "installation": codex.installation,
+                        "authentication": codex.authentication,
+                    },
+                    "category": codex.category,
+                }))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        files.push(ManagedFile {
+            path: runtime_root.join(".agents/plugins/marketplace.json"),
+            contents: serde_json::to_vec_pretty(&serde_json::json!({ "plugins": codex_plugins }))?,
+        });
+    }
+
+    Ok(files)
+}
+
+fn workspace_marketplace_managed_files(resolution: &Resolution) -> Result<Vec<String>> {
+    let Some(root) = resolution
+        .packages
+        .iter()
+        .find(|package| matches!(package.source, PackageSource::Root))
+        .map(|package| &package.manifest)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(planned_workspace_marketplace_files(root, &root.root)?
+        .into_iter()
+        .map(|file| display_path(file.path.strip_prefix(&root.root).unwrap_or(&file.path)))
+        .collect())
 }
 
 fn sorted_ids<'a>(ids: impl Iterator<Item = &'a String>) -> Vec<String> {

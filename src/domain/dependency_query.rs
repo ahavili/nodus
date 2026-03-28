@@ -31,6 +31,7 @@ pub(crate) struct ResolvedInspectionTarget {
     pub(crate) source: ResolvedInspectionSource,
     pub(crate) enabled: bool,
     pub(crate) selected_components: Option<Vec<DependencyComponent>>,
+    pub(crate) selected_workspace_members: Option<Vec<String>>,
     pub(crate) version_requirement: Option<String>,
     pub(crate) role: PackageRole,
 }
@@ -112,6 +113,7 @@ pub(crate) fn resolve_inspection_target(
                 },
                 enabled: dependency.is_enabled(),
                 selected_components: dependency.effective_selected_components(),
+                selected_workspace_members: dependency.explicit_members_sorted(),
                 version_requirement: dependency.version.as_ref().map(ToString::to_string),
                 role: PackageRole::Dependency,
             })
@@ -139,6 +141,7 @@ pub(crate) fn resolve_inspection_target(
                 },
                 enabled: dependency.is_enabled(),
                 selected_components: dependency.effective_selected_components(),
+                selected_workspace_members: dependency.explicit_members_sorted(),
                 version_requirement: dependency.version.as_ref().map(ToString::to_string),
                 role: PackageRole::Dependency,
             })

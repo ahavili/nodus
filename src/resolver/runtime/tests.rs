@@ -189,6 +189,44 @@ fn create_git_dependency() -> (TempDir, String) {
     (repo, url)
 }
 
+fn create_workspace_dependency() -> TempDir {
+    let repo = TempDir::new().unwrap();
+    write_workspace_dependency(repo.path());
+    init_git_repo(repo.path());
+    tag_repo(repo.path(), "v0.2.0");
+    repo
+}
+
+fn write_workspace_dependency(path: &Path) {
+    write_manifest(
+        path,
+        r#"
+[workspace]
+members = ["plugins/axiom", "plugins/firebase"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+
+[workspace.package.axiom.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+
+[workspace.package.firebase]
+path = "plugins/firebase"
+name = "Firebase"
+
+[workspace.package.firebase.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+"#,
+    );
+    write_skill(&path.join("plugins/axiom/skills/review"), "Review");
+    write_skill(&path.join("plugins/firebase/skills/checks"), "Checks");
+}
+
 fn tag_repo(path: &Path, tag: &str) {
     let output = Command::new("git")
         .args(["tag", tag])
@@ -709,6 +747,209 @@ fn add_dependency_uses_latest_tag_when_not_provided() {
 
     let manifest = fs::read_to_string(temp.path().join(MANIFEST_FILE)).unwrap();
     assert!(manifest.contains("tag = \"v1.2.0\""));
+}
+
+#[test]
+fn resolve_workspace_root_includes_all_members() {
+    let repo = create_workspace_dependency();
+    let cache = cache_dir();
+
+    let resolution = resolve_project(repo.path(), cache.path(), ResolveMode::Sync).unwrap();
+
+    assert_eq!(resolution.packages.len(), 3);
+    assert!(
+        resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "root")
+    );
+    assert!(
+        resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "axiom")
+    );
+    assert!(
+        resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "firebase")
+    );
+}
+
+#[test]
+fn add_dependency_writes_all_workspace_members_to_manifest() {
+    let project = TempDir::new().unwrap();
+    let cache = cache_dir();
+    let repo = create_workspace_dependency();
+
+    let summary = add_dependency_in_dir_with_adapters(
+        project.path(),
+        cache.path(),
+        &repo.path().to_string_lossy(),
+        Some("v0.2.0"),
+        &Adapter::ALL,
+        &[],
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary
+            .workspace_members
+            .iter()
+            .map(|member| (member.id.as_str(), member.enabled))
+            .collect::<Vec<_>>(),
+        vec![("axiom", true), ("firebase", true)]
+    );
+    assert!(
+        summary
+            .dependency_preview
+            .contains("members = [\"axiom\", \"firebase\"]")
+    );
+
+    let loaded = load_root_from_dir(project.path()).unwrap();
+    let dependency = loaded
+        .manifest
+        .dependencies
+        .get(&normalize_alias_from_url(&repo.path().to_string_lossy()).unwrap())
+        .unwrap();
+    assert_eq!(
+        dependency.members.as_deref(),
+        Some(&["axiom".to_string(), "firebase".to_string()][..])
+    );
+}
+
+#[test]
+fn workspace_dependency_without_members_enables_no_member_packages() {
+    let project = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_workspace_dependency(&project.path().join("vendor/wrapper"));
+    write_manifest(
+        project.path(),
+        r#"
+[dependencies.wrapper]
+path = "vendor/wrapper"
+"#,
+    );
+
+    let resolution = resolve_project(project.path(), cache.path(), ResolveMode::Sync).unwrap();
+
+    assert_eq!(resolution.packages.len(), 2);
+    assert!(
+        resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "wrapper")
+    );
+    assert!(
+        !resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "axiom")
+    );
+    assert!(
+        !resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "firebase")
+    );
+
+    let lockfile = resolution
+        .to_lockfile(Adapters::from_slice(&Adapter::ALL), project.path())
+        .unwrap();
+    let wrapper = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "wrapper")
+        .unwrap();
+    assert!(wrapper.dependencies.is_empty());
+}
+
+#[test]
+fn workspace_dependency_installs_only_selected_members() {
+    let project = TempDir::new().unwrap();
+    let cache = cache_dir();
+    write_workspace_dependency(&project.path().join("vendor/wrapper"));
+    write_manifest(
+        project.path(),
+        r#"
+[dependencies.wrapper]
+path = "vendor/wrapper"
+members = ["firebase"]
+"#,
+    );
+
+    let resolution = resolve_project(project.path(), cache.path(), ResolveMode::Sync).unwrap();
+
+    assert_eq!(resolution.packages.len(), 3);
+    assert!(
+        resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "wrapper")
+    );
+    assert!(
+        !resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "axiom")
+    );
+    assert!(
+        resolution
+            .packages
+            .iter()
+            .any(|package| package.alias == "firebase")
+    );
+
+    let lockfile = resolution
+        .to_lockfile(Adapters::from_slice(&Adapter::ALL), project.path())
+        .unwrap();
+    let wrapper = lockfile
+        .packages
+        .iter()
+        .find(|package| package.alias == "wrapper")
+        .unwrap();
+    assert_eq!(wrapper.dependencies, vec!["firebase"]);
+}
+
+#[test]
+fn sync_generates_workspace_marketplace_files() {
+    let repo = create_workspace_dependency();
+    let cache = cache_dir();
+
+    sync_in_dir_with_adapters(repo.path(), cache.path(), false, false, &Adapter::ALL).unwrap();
+
+    let claude: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".claude-plugin/marketplace.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(claude["plugins"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        claude["plugins"][0]["source"].as_str(),
+        Some("plugins/axiom")
+    );
+
+    let codex: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(repo.path().join(".agents/plugins/marketplace.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(codex["plugins"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        codex["plugins"][0]["policy"]["installation"].as_str(),
+        Some("AVAILABLE")
+    );
+
+    let lockfile = Lockfile::read(&repo.path().join(LOCKFILE_NAME)).unwrap();
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&String::from(".claude-plugin/marketplace.json"))
+    );
+    assert!(
+        lockfile
+            .managed_files
+            .contains(&String::from(".agents/plugins/marketplace.json"))
+    );
 }
 
 #[test]

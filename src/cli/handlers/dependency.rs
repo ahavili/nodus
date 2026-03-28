@@ -72,6 +72,27 @@ pub(crate) fn handle_add(context: &CommandContext<'_>, command: AddCommand) -> a
             context.reporter,
         )?
     };
+    if !summary.workspace_members.is_empty() {
+        let intro = if dry_run {
+            "workspace dependency preview:"
+        } else {
+            "workspace dependency members:"
+        };
+        context.reporter.line(intro)?;
+        context
+            .reporter
+            .line(format!("  config: {}", summary.dependency_preview))?;
+        for member in &summary.workspace_members {
+            let status = if member.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            context
+                .reporter
+                .line(format!("  {} ({status})", member.id))?;
+        }
+    }
     let message = if dry_run {
         format!(
             "dry run: would add {} {} with adapters [{}]; would write {} managed files",

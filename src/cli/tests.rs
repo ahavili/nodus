@@ -94,6 +94,55 @@ fn create_git_dependency() -> (TempDir, String) {
     (repo, url)
 }
 
+fn create_workspace_dependency() -> (TempDir, String) {
+    let repo = TempDir::new().unwrap();
+    write_file(
+        &repo.path().join("nodus.toml"),
+        r#"
+[workspace]
+members = ["plugins/axiom", "plugins/firebase"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+
+[workspace.package.axiom.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+
+[workspace.package.firebase]
+path = "plugins/firebase"
+name = "Firebase"
+
+[workspace.package.firebase.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+"#,
+    );
+    write_skill(&repo.path().join("plugins/axiom/skills/review"), "Review");
+    write_skill(
+        &repo.path().join("plugins/firebase/skills/checks"),
+        "Checks",
+    );
+    init_git_repo(repo.path());
+
+    let output = ProcessCommand::new("git")
+        .args(["tag", "v0.2.0"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let url = repo.path().to_string_lossy().to_string();
+    (repo, url)
+}
+
 fn run_command_output(command: Command, cwd: &Path, cache_root: &Path) -> String {
     let buffer = SharedBuffer::default();
     let reporter = Reporter::sink(ColorMode::Never, buffer.clone());
@@ -1175,6 +1224,37 @@ fn add_dry_run_previews_without_writing_project_files() {
     assert!(!temp.path().join("nodus.toml").exists());
     assert!(!temp.path().join("nodus.lock").exists());
     assert!(!temp.path().join(".codex").exists());
+}
+
+#[test]
+fn add_dry_run_previews_workspace_members_and_config() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    let (_repo, url) = create_workspace_dependency();
+
+    let output = run_command_output(
+        Command::Add {
+            url,
+            global: false,
+            dev: false,
+            tag: None,
+            branch: None,
+            version: None,
+            revision: None,
+            adapter: vec![Adapter::Claude],
+            component: vec![],
+            sync_on_launch: false,
+            dry_run: true,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(output.contains("workspace dependency preview:"));
+    assert!(output.contains("config:"));
+    assert!(output.contains("members = [\"axiom\", \"firebase\"]"));
+    assert!(output.contains("axiom (enabled)"));
+    assert!(output.contains("firebase (enabled)"));
 }
 
 #[test]
