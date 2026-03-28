@@ -103,6 +103,16 @@ fn run_command_output(command: Command, cwd: &Path, cache_root: &Path) -> String
     buffer.contents()
 }
 
+fn run_command_streams(command: Command, cwd: &Path, cache_root: &Path) -> (String, String) {
+    let stdout = SharedBuffer::default();
+    let stderr = SharedBuffer::default();
+    let reporter = Reporter::sink_split(ColorMode::Never, stdout.clone(), stderr.clone());
+
+    run_command_in_dir(command, cwd, cache_root, &reporter).unwrap();
+
+    (stdout.contents(), stderr.contents())
+}
+
 fn read_optional(path: &Path) -> Option<Vec<u8>> {
     fs::read(path).ok()
 }
@@ -565,6 +575,39 @@ local_playbook = { path = "vendor/playbook", components = ["skills"] }
 }
 
 #[test]
+fn list_command_writes_results_to_stdout() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+[dependencies]
+local_playbook = { path = "vendor/playbook", components = ["skills"] }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/playbook/skills/review"), "Review");
+
+    let (stdout, stderr) =
+        run_command_streams(Command::List { json: false }, temp.path(), cache.path());
+
+    assert!(stdout.contains("local_playbook"));
+    assert!(stdout.contains("path vendor/playbook"));
+    assert!(stderr.is_empty());
+}
+
+#[test]
+fn list_command_writes_empty_state_note_to_stderr() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+
+    let (stdout, stderr) =
+        run_command_streams(Command::List { json: false }, temp.path(), cache.path());
+
+    assert!(stdout.is_empty());
+    assert_eq!(stderr, "note: no dependencies configured\n");
+}
+
+#[test]
 fn list_command_emits_json_with_locked_metadata() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
@@ -609,6 +652,27 @@ fn list_command_emits_json_with_locked_metadata() {
     assert!(json["dependencies"][0]["locked"]["rev"].as_str().is_some());
     assert!(!output.contains("Finished"));
     assert!(!output.contains("Checking"));
+}
+
+#[test]
+fn list_json_command_writes_only_json_to_stdout() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+[dependencies]
+local_playbook = { path = "vendor/playbook", components = ["skills"] }
+"#,
+    );
+    write_skill(&temp.path().join("vendor/playbook/skills/review"), "Review");
+
+    let (stdout, stderr) =
+        run_command_streams(Command::List { json: true }, temp.path(), cache.path());
+
+    let json: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["dependencies"][0]["alias"], "local_playbook");
+    assert!(stderr.is_empty());
 }
 
 #[test]
@@ -866,6 +930,18 @@ fn init_command_emits_creating_and_finished_lines() {
 }
 
 #[test]
+fn init_command_writes_progress_to_stderr_and_finish_to_stdout() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+
+    let (stdout, stderr) =
+        run_command_streams(Command::Init { dry_run: false }, temp.path(), cache.path());
+
+    assert!(stdout.contains("Finished created"));
+    assert!(stderr.contains("Creating"));
+}
+
+#[test]
 fn init_dry_run_previews_without_writing() {
     let temp = TempDir::new().unwrap();
     let cache = TempDir::new().unwrap();
@@ -908,6 +984,35 @@ version = "0.1.0"
     assert!(output.contains("artifacts:"));
     assert!(output.contains("skills = [review]"));
     assert!(!output.contains("Finished"));
+}
+
+#[test]
+fn info_command_writes_metadata_to_stdout() {
+    let temp = TempDir::new().unwrap();
+    let cache = TempDir::new().unwrap();
+    write_file(
+        &temp.path().join("nodus.toml"),
+        r#"
+name = "playbook-ios"
+version = "0.1.0"
+"#,
+    );
+    write_skill(&temp.path().join("skills/review"), "Review");
+
+    let (stdout, stderr) = run_command_streams(
+        Command::Info {
+            package: ".".into(),
+            tag: None,
+            branch: None,
+            json: false,
+        },
+        temp.path(),
+        cache.path(),
+    );
+
+    assert!(stdout.contains("playbook-ios"));
+    assert!(stdout.contains("version: 0.1.0"));
+    assert!(stderr.is_empty());
 }
 
 #[test]

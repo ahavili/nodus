@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::io::{self, Write};
+use std::rc::Rc;
 
 use anstream::{AutoStream, ColorChoice};
 use anstyle::{AnsiColor, Style};
@@ -30,42 +31,88 @@ impl ColorMode {
 }
 
 pub struct Reporter {
-    writer: RefCell<Box<dyn Write>>,
+    result: ReportStream,
+    diagnostic: ReportStream,
+}
+
+struct ReportStream {
+    writer: Rc<RefCell<Box<dyn Write>>>,
     color_enabled: bool,
 }
 
-impl Reporter {
-    pub fn stdout() -> Self {
-        let stream = AutoStream::new(io::stdout().lock(), ColorMode::Auto.choice());
-        let color_enabled = !matches!(stream.current_choice(), ColorChoice::Never);
+impl ReportStream {
+    fn new(writer: impl Write + 'static, color_enabled: bool) -> Self {
         Self {
-            writer: RefCell::new(Box::new(stream)),
+            writer: Rc::new(RefCell::new(Box::new(writer))),
             color_enabled,
         }
     }
 
+    fn shared(writer: Rc<RefCell<Box<dyn Write>>>, color_enabled: bool) -> Self {
+        Self {
+            writer,
+            color_enabled,
+        }
+    }
+
+    fn write_line(&self, line: &str) -> anyhow::Result<()> {
+        let mut writer = self.writer.borrow_mut();
+        writeln!(writer, "{line}").map_err(Into::into)
+    }
+}
+
+impl Reporter {
     pub fn stderr() -> Self {
         let stream = AutoStream::new(io::stderr().lock(), ColorMode::Auto.choice());
         let color_enabled = !matches!(stream.current_choice(), ColorChoice::Never);
         Self {
-            writer: RefCell::new(Box::new(stream)),
-            color_enabled,
+            result: ReportStream::new(stream, color_enabled),
+            diagnostic: ReportStream::new(
+                AutoStream::new(io::stderr().lock(), ColorMode::Auto.choice()),
+                color_enabled,
+            ),
+        }
+    }
+
+    pub fn stdio() -> Self {
+        let result = AutoStream::new(io::stdout().lock(), ColorMode::Auto.choice());
+        let diagnostic = AutoStream::new(io::stderr().lock(), ColorMode::Auto.choice());
+        let result_color_enabled = !matches!(result.current_choice(), ColorChoice::Never);
+        let diagnostic_color_enabled = !matches!(diagnostic.current_choice(), ColorChoice::Never);
+        Self {
+            result: ReportStream::new(result, result_color_enabled),
+            diagnostic: ReportStream::new(diagnostic, diagnostic_color_enabled),
         }
     }
 
     pub fn sink(_mode: ColorMode, writer: impl Write + 'static) -> Self {
+        let color_enabled = {
+            #[cfg(test)]
+            {
+                matches!(_mode, ColorMode::Always)
+            }
+            #[cfg(not(test))]
+            {
+                false
+            }
+        };
+        let writer = Rc::new(RefCell::new(Box::new(writer) as Box<dyn Write>));
         Self {
-            writer: RefCell::new(Box::new(writer)),
-            color_enabled: {
-                #[cfg(test)]
-                {
-                    matches!(_mode, ColorMode::Always)
-                }
-                #[cfg(not(test))]
-                {
-                    false
-                }
-            },
+            result: ReportStream::shared(Rc::clone(&writer), color_enabled),
+            diagnostic: ReportStream::shared(writer, color_enabled),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn sink_split(
+        mode: ColorMode,
+        result_writer: impl Write + 'static,
+        diagnostic_writer: impl Write + 'static,
+    ) -> Self {
+        let color_enabled = matches!(mode, ColorMode::Always);
+        Self {
+            result: ReportStream::new(result_writer, color_enabled),
+            diagnostic: ReportStream::new(diagnostic_writer, color_enabled),
         }
     }
 
@@ -75,36 +122,36 @@ impl Reporter {
 
     pub fn status(&self, label: &str, message: impl std::fmt::Display) -> anyhow::Result<()> {
         let padded = format!("{label:>LABEL_WIDTH$}");
-        self.write_line(&format!(
+        self.write_diagnostic_line(&format!(
             "{} {message}",
-            self.styled(&padded, Self::status_style()),
+            self.styled_diagnostic(&padded, Self::status_style()),
         ))
     }
 
     pub fn finish(&self, message: impl std::fmt::Display) -> anyhow::Result<()> {
         let padded = format!("{:>LABEL_WIDTH$}", "Finished");
-        self.write_line(&format!(
+        self.write_result_line(&format!(
             "{} {message}",
-            self.styled(&padded, Self::finish_style()),
+            self.styled_result(&padded, Self::finish_style()),
         ))
     }
 
     pub fn warning(&self, message: impl std::fmt::Display) -> anyhow::Result<()> {
-        self.write_line(&format!(
+        self.write_diagnostic_line(&format!(
             "{} {message}",
-            self.styled("warning:", Self::warning_style()),
+            self.styled_diagnostic("warning:", Self::warning_style()),
         ))
     }
 
     pub fn note(&self, message: impl std::fmt::Display) -> anyhow::Result<()> {
-        self.write_line(&format!(
+        self.write_diagnostic_line(&format!(
             "{} {message}",
-            self.styled("note:", Self::note_style()),
+            self.styled_diagnostic("note:", Self::note_style()),
         ))
     }
 
     pub fn line(&self, message: impl std::fmt::Display) -> anyhow::Result<()> {
-        self.write_line(&message.to_string())
+        self.write_result_line(&message.to_string())
     }
 
     pub fn preview(&self, change: &PreviewChange) -> anyhow::Result<()> {
@@ -112,40 +159,51 @@ impl Reporter {
     }
 
     pub fn color_enabled(&self) -> bool {
-        self.color_enabled
+        self.result.color_enabled
     }
 
     pub fn paint(&self, value: &str, style: Style) -> String {
-        self.styled(value, style)
+        self.styled_result(value, style)
     }
 
     pub fn error(&self, error: &Error) -> anyhow::Result<()> {
         let mut chain = error.chain();
         if let Some(head) = chain.next() {
-            self.write_line(&format!(
+            self.write_diagnostic_line(&format!(
                 "{} {head}",
-                self.styled("error:", Self::error_style()),
+                self.styled_diagnostic("error:", Self::error_style()),
             ))?;
         }
 
         let causes = chain.map(|cause| cause.to_string()).collect::<Vec<_>>();
         if !causes.is_empty() {
-            self.write_line("Caused by:")?;
+            self.write_diagnostic_line("Caused by:")?;
             for (index, cause) in causes.iter().enumerate() {
-                self.write_line(&format!("  {index}: {cause}"))?;
+                self.write_diagnostic_line(&format!("  {index}: {cause}"))?;
             }
         }
 
         Ok(())
     }
 
-    fn write_line(&self, line: &str) -> anyhow::Result<()> {
-        let mut writer = self.writer.borrow_mut();
-        writeln!(writer, "{line}").map_err(Into::into)
+    fn write_result_line(&self, line: &str) -> anyhow::Result<()> {
+        self.result.write_line(line)
     }
 
-    fn styled(&self, value: &str, style: Style) -> String {
-        if self.color_enabled {
+    fn write_diagnostic_line(&self, line: &str) -> anyhow::Result<()> {
+        self.diagnostic.write_line(line)
+    }
+
+    fn styled_result(&self, value: &str, style: Style) -> String {
+        if self.result.color_enabled {
+            format!("{style}{value}{style:#}")
+        } else {
+            value.to_string()
+        }
+    }
+
+    fn styled_diagnostic(&self, value: &str, style: Style) -> String {
+        if self.diagnostic.color_enabled {
             format!("{style}{value}{style:#}")
         } else {
             value.to_string()
@@ -259,5 +317,19 @@ mod tests {
             buffer.contents(),
             "error: inner\nCaused by:\n  0: middle\n  1: outer\n"
         );
+    }
+
+    #[test]
+    fn routes_results_and_diagnostics_to_different_writers() {
+        let result = SharedBuffer::default();
+        let diagnostic = SharedBuffer::default();
+        let reporter = Reporter::sink_split(ColorMode::Never, result.clone(), diagnostic.clone());
+
+        reporter.line("payload").unwrap();
+        reporter.status("Checking", "project graph").unwrap();
+        reporter.finish("done").unwrap();
+
+        assert_eq!(result.contents(), "payload\n    Finished done\n");
+        assert_eq!(diagnostic.contents(), "    Checking project graph\n");
     }
 }

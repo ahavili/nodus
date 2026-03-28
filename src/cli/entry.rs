@@ -4,17 +4,13 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use super::args::Cli;
-use super::output::{should_auto_check_for_updates, uses_json_output};
+use super::output::should_auto_check_for_updates;
 use super::router::run_command_in_dir;
 use crate::report::Reporter;
 
 pub(super) fn run() -> ExitCode {
     let cli = Cli::parse();
-    let output_reporter = if uses_json_output(&cli.command) {
-        Reporter::stdout()
-    } else {
-        Reporter::stderr()
-    };
+    let output_reporter = Reporter::stdio();
     let error_reporter = Reporter::stderr();
     let should_check_for_updates = should_auto_check_for_updates(
         &cli.command,
