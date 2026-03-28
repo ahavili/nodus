@@ -58,13 +58,37 @@ impl LoadedManifest {
         {
             bail!("manifest field `launch_hooks.sync_on_startup` must be true when set");
         }
+        if self.manifest.workspace.is_some() {
+            validate_workspace(self)?;
+            if !self.discovered.is_empty() {
+                bail!(
+                    "workspace roots must not declare root-level `agents/`, `commands/`, `rules/`, or `skills/`; move package content into workspace members"
+                );
+            }
+            if !self.manifest.content_roots.is_empty() {
+                bail!("workspace roots must not declare `content_roots`");
+            }
+            if self.manifest.publish_root {
+                bail!("workspace roots must not declare `publish_root`");
+            }
+            if !self.manifest.managed_exports.is_empty() {
+                bail!("workspace roots must not declare `managed_exports`");
+            }
+            if !self.manifest.mcp_servers.is_empty() {
+                bail!("workspace roots must not declare `mcp_servers`");
+            }
+        }
 
         let allow_empty_package = match role {
             PackageRole::Root => true,
             PackageRole::Dependency => {
-                (self.manifest_path.is_some() || self.allows_empty_dependency_wrapper)
-                    && (!self.manifest.dependencies.is_empty()
-                        || !self.manifest.mcp_servers.is_empty())
+                if self.manifest.workspace.is_some() {
+                    true
+                } else {
+                    (self.manifest_path.is_some() || self.allows_empty_dependency_wrapper)
+                        && (!self.manifest.dependencies.is_empty()
+                            || !self.manifest.mcp_servers.is_empty())
+                }
             }
         };
         if self.discovered.is_empty()
@@ -142,6 +166,46 @@ impl LoadedManifest {
 
     pub fn effective_version(&self) -> Option<Version> {
         self.manifest.version.clone()
+    }
+
+    pub fn resolved_workspace_members(&self) -> Result<Vec<ResolvedWorkspaceMember>> {
+        let Some(workspace) = &self.manifest.workspace else {
+            return Ok(Vec::new());
+        };
+
+        let mut members_by_path = std::collections::BTreeMap::new();
+        for (id, member) in &workspace.package {
+            let resolved_path = normalize_manifest_relative_path(
+                &member.path,
+                &format!("manifest field `workspace.package.{id}.path`"),
+            )?;
+            members_by_path.insert(
+                resolved_path,
+                ResolvedWorkspaceMember {
+                    id: id.clone(),
+                    path: member.path.clone(),
+                    name: member.name.clone(),
+                    codex: member.codex.clone(),
+                },
+            );
+        }
+
+        let mut ordered = Vec::with_capacity(workspace.members.len());
+        for member_path in &workspace.members {
+            let normalized_path = normalize_manifest_relative_path(
+                member_path,
+                "manifest field `workspace.members` entry",
+            )?;
+            let Some(member) = members_by_path.remove(&normalized_path) else {
+                bail!(
+                    "manifest field `workspace.members` path `{}` must match a `[workspace.package.<id>]` entry",
+                    display_path(member_path)
+                );
+            };
+            ordered.push(member);
+        }
+
+        Ok(ordered)
     }
 
     pub(super) fn resolve_existing_path(&self, value: &Path) -> Result<PathBuf> {
@@ -420,6 +484,18 @@ fn validate_dependency_entry(package: &LoadedManifest, entry: DependencyEntry<'_
         }
     }
 
+    if let Some(members) = &dependency.members {
+        let mut seen = HashSet::new();
+        for member in members {
+            if member.trim().is_empty() {
+                bail!("{label} `{alias}` field `members` must not contain empty names");
+            }
+            if !seen.insert(member) {
+                bail!("{label} `{alias}` field `members` must not contain duplicates");
+            }
+        }
+    }
+
     validate_dependency_managed_specs(alias, dependency.managed.as_deref())?;
     Ok(())
 }
@@ -464,6 +540,14 @@ impl DependencySpec {
                 .join(", ");
             fields.push(format!("components = [{encoded}]"));
         }
+        if let Some(members) = self.explicit_members_sorted() {
+            let encoded = members
+                .into_iter()
+                .map(|member| quote(&member))
+                .collect::<Vec<_>>()
+                .join(", ");
+            fields.push(format!("members = [{encoded}]"));
+        }
         if !self.enabled {
             fields.push("enabled = false".to_string());
         }
@@ -474,6 +558,12 @@ impl DependencySpec {
         let mut components = self.components.clone()?;
         components.sort();
         Some(components)
+    }
+
+    pub fn explicit_members_sorted(&self) -> Option<Vec<String>> {
+        let mut members = self.members.clone()?;
+        members.sort();
+        Some(members)
     }
 
     pub fn normalized_components(&self) -> Vec<DependencyComponent> {
@@ -562,6 +652,88 @@ impl DependencySpec {
     pub fn managed_mappings(&self) -> &[ManagedPathSpec] {
         self.managed.as_deref().unwrap_or(&[])
     }
+}
+
+fn validate_workspace(package: &LoadedManifest) -> Result<()> {
+    let Some(workspace) = &package.manifest.workspace else {
+        return Ok(());
+    };
+    if workspace.members.is_empty() {
+        bail!("manifest field `workspace.members` must not be empty");
+    }
+    if workspace.package.is_empty() {
+        bail!("manifest field `workspace.package` must not be empty");
+    }
+
+    let mut seen_paths = HashSet::new();
+    for member_path in &workspace.members {
+        let normalized_path = normalize_manifest_relative_path(
+            member_path,
+            "manifest field `workspace.members` entry",
+        )?;
+        if !seen_paths.insert(normalized_path.clone()) {
+            bail!("manifest field `workspace.members` must not contain duplicate paths");
+        }
+        let resolved = package.resolve_existing_path(&normalized_path)?;
+        if !resolved.is_dir() {
+            bail!(
+                "manifest field `workspace.members` path `{}` must point to a directory",
+                display_path(member_path)
+            );
+        }
+    }
+
+    let mut package_paths = HashSet::new();
+    for (id, member) in &workspace.package {
+        let normalized_id = normalize_dependency_alias(id)?;
+        if normalized_id != *id {
+            bail!("workspace package id `{id}` must already be normalized as `{normalized_id}`");
+        }
+        if let Some(name) = &member.name
+            && name.trim().is_empty()
+        {
+            bail!("manifest field `workspace.package.{id}.name` must not be empty");
+        }
+        let normalized_path = normalize_manifest_relative_path(
+            &member.path,
+            &format!("manifest field `workspace.package.{id}.path`"),
+        )?;
+        if !package_paths.insert(normalized_path.clone()) {
+            bail!("manifest field `workspace.package` must not contain duplicate paths");
+        }
+        if !seen_paths.contains(&normalized_path) {
+            bail!(
+                "manifest field `workspace.package.{id}.path` must also appear in `workspace.members`"
+            );
+        }
+        let resolved = package.resolve_existing_path(&normalized_path)?;
+        if !resolved.is_dir() {
+            bail!("manifest field `workspace.package.{id}.path` must point to a directory");
+        }
+        if let Some(codex) = &member.codex {
+            if codex.category.trim().is_empty() {
+                bail!("manifest field `workspace.package.{id}.codex.category` must not be empty");
+            }
+            if codex.installation.trim().is_empty() {
+                bail!(
+                    "manifest field `workspace.package.{id}.codex.installation` must not be empty"
+                );
+            }
+            if codex.authentication.trim().is_empty() {
+                bail!(
+                    "manifest field `workspace.package.{id}.codex.authentication` must not be empty"
+                );
+            }
+        }
+    }
+
+    if seen_paths.len() != package_paths.len() {
+        bail!(
+            "manifest field `workspace.members` and `workspace.package` must describe the same member set"
+        );
+    }
+
+    Ok(())
 }
 
 impl ManagedPathSpec {

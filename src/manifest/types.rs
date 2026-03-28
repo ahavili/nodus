@@ -31,6 +31,8 @@ pub struct Manifest {
     pub adapters: Option<AdapterConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_hooks: Option<LaunchHookConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub dependencies: BTreeMap<String, DependencySpec>,
     #[serde(
@@ -58,6 +60,30 @@ impl AdapterConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchHookConfig {
     pub sync_on_startup: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub package: BTreeMap<String, WorkspaceMemberSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceMemberSpec {
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<WorkspaceMemberCodexSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceMemberCodexSpec {
+    pub category: String,
+    pub installation: String,
+    pub authentication: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +128,8 @@ pub struct DependencySpec {
     pub version: Option<VersionReq>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<Vec<DependencyComponent>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed: Option<Vec<ManagedPathSpec>>,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
@@ -212,6 +240,14 @@ pub struct LoadedManifest {
     pub(super) extra_package_files: Vec<PathBuf>,
     pub(super) allows_empty_dependency_wrapper: bool,
     pub(super) manifest_contents_override: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedWorkspaceMember {
+    pub id: String,
+    pub path: PathBuf,
+    pub name: Option<String>,
+    pub codex: Option<WorkspaceMemberCodexSpec>,
 }
 
 #[derive(Debug, Clone)]

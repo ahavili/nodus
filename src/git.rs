@@ -191,6 +191,7 @@ fn add_dependency_at_paths_with_adapters_mode(
                 sorted.dedup();
                 sorted
             }),
+            members: None,
             managed: None,
             enabled: true,
         },
@@ -1141,6 +1142,7 @@ mod tests {
                 revision: None,
                 version: None,
                 components: None,
+                members: None,
                 managed: None,
                 enabled: true,
             },
@@ -1166,6 +1168,7 @@ mod tests {
                 revision: None,
                 version: None,
                 components: None,
+                members: None,
                 managed: None,
                 enabled: true,
             },

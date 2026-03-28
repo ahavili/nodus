@@ -24,7 +24,8 @@ pub(super) fn load_manifest_str(path: &Path, contents: &str) -> Result<(Manifest
 }
 
 pub(super) fn should_try_plugin_wrapper_fallback(loaded: &LoadedManifest) -> bool {
-    loaded.discovered.is_empty()
+    loaded.manifest.workspace.is_none()
+        && loaded.discovered.is_empty()
         && loaded.manifest.dependencies.is_empty()
         && loaded.manifest.mcp_servers.is_empty()
 }
@@ -128,6 +129,7 @@ pub(super) fn load_claude_marketplace_wrapper(
                 revision: None,
                 version: None,
                 components: None,
+                members: None,
                 managed: None,
                 enabled: true,
             },
@@ -246,6 +248,7 @@ pub(super) fn load_codex_marketplace_wrapper(
                 revision: None,
                 version: None,
                 components: None,
+                members: None,
                 managed: None,
                 enabled: true,
             },
@@ -701,6 +704,7 @@ pub(super) fn collect_ignored_field_warnings(table: &Table) -> Vec<String> {
         "mcp_servers",
         "adapters",
         "launch_hooks",
+        "workspace",
         "dependencies",
         "dev-dependencies",
     ];

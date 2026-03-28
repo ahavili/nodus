@@ -32,6 +32,13 @@ fn write_skill(root: &Path, name: &str) {
     );
 }
 
+fn write_workspace_member(root: &Path, skill_name: &str) {
+    write_file(
+        &root.join("skills/review/SKILL.md"),
+        &format!("---\nname: {skill_name}\ndescription: Example skill.\n---\n# {skill_name}\n"),
+    );
+}
+
 fn write_marketplace(root: &Path, contents: &str) {
     write_file(&root.join(".claude-plugin/marketplace.json"), contents);
 }
@@ -139,6 +146,65 @@ playbook_ios = { github = "wenext-limited/playbook-ios", tag = "v0.1.0" }
 }
 
 #[test]
+fn accepts_workspace_root_without_discovered_root_assets() {
+    let temp = TempDir::new().unwrap();
+    write_workspace_member(&temp.path().join("plugins/axiom"), "Axiom");
+    write_workspace_member(&temp.path().join("plugins/firebase"), "Firebase");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[workspace]
+members = ["plugins/axiom", "plugins/firebase"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+
+[workspace.package.axiom.codex]
+category = "Productivity"
+installation = "AVAILABLE"
+authentication = "ON_INSTALL"
+
+[workspace.package.firebase]
+path = "plugins/firebase"
+name = "Firebase"
+"#,
+    );
+
+    let loaded = load_root_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    let members = loaded.resolved_workspace_members().unwrap();
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0].id, "axiom");
+    assert_eq!(members[1].id, "firebase");
+    assert_eq!(members[0].name.as_deref(), Some("Axiom"));
+    assert_eq!(members[0].codex.as_ref().unwrap().category, "Productivity");
+}
+
+#[test]
+fn accepts_workspace_dependency_wrapper() {
+    let temp = TempDir::new().unwrap();
+    write_workspace_member(&temp.path().join("plugins/axiom"), "Axiom");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[workspace]
+members = ["plugins/axiom"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+name = "Axiom"
+"#,
+    );
+
+    let loaded = load_dependency_from_dir(temp.path()).unwrap();
+
+    assert!(loaded.discovered.is_empty());
+    assert!(loaded.manifest.workspace.is_some());
+}
+
+#[test]
 fn does_not_warn_for_supported_launch_hook_config() {
     let temp = TempDir::new().unwrap();
     write_valid_skill(temp.path());
@@ -177,6 +243,45 @@ publish_root = true
         vec![PathBuf::from("nodus-development")]
     );
     assert!(loaded.manifest.publish_root);
+}
+
+#[test]
+fn rejects_workspace_root_with_discovered_assets() {
+    let temp = TempDir::new().unwrap();
+    write_valid_skill(temp.path());
+    write_workspace_member(&temp.path().join("plugins/axiom"), "Axiom");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[workspace]
+members = ["plugins/axiom"]
+
+[workspace.package.axiom]
+path = "plugins/axiom"
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("workspace roots must not declare root-level"));
+}
+
+#[test]
+fn rejects_workspace_root_with_unmatched_member_path() {
+    let temp = TempDir::new().unwrap();
+    write_workspace_member(&temp.path().join("plugins/axiom"), "Axiom");
+    write_file(
+        &temp.path().join(MANIFEST_FILE),
+        r#"
+[workspace]
+members = ["plugins/axiom"]
+
+[workspace.package.firebase]
+path = "plugins/firebase"
+"#,
+    );
+
+    let error = load_root_from_dir(temp.path()).unwrap_err().to_string();
+    assert!(error.contains("workspace.package.firebase.path"));
 }
 
 #[test]
@@ -1067,6 +1172,7 @@ fn serializes_dependencies_as_inline_tables() {
                 DependencyComponent::Rules,
                 DependencyComponent::Skills,
             ]),
+            members: None,
             managed: None,
             enabled: true,
         },
@@ -1096,6 +1202,7 @@ fn serializes_disabled_dependencies() {
             revision: None,
             version: None,
             components: None,
+            members: None,
             managed: None,
             enabled: false,
         },
@@ -1121,6 +1228,63 @@ fn serializes_content_roots_and_publish_root() {
 
     assert!(encoded.contains("content_roots = [\"nodus-development\", \"vendor/skills\"]"));
     assert!(encoded.contains("publish_root = true"));
+}
+
+#[test]
+fn serializes_workspace_and_dependency_members() {
+    let mut manifest = Manifest::default();
+    manifest.workspace = Some(WorkspaceConfig {
+        members: vec![
+            PathBuf::from("plugins/axiom"),
+            PathBuf::from("plugins/firebase"),
+        ],
+        package: BTreeMap::from([
+            (
+                "axiom".into(),
+                WorkspaceMemberSpec {
+                    path: PathBuf::from("plugins/axiom"),
+                    name: Some("Axiom".into()),
+                    codex: Some(WorkspaceMemberCodexSpec {
+                        category: "Productivity".into(),
+                        installation: "AVAILABLE".into(),
+                        authentication: "ON_INSTALL".into(),
+                    }),
+                },
+            ),
+            (
+                "firebase".into(),
+                WorkspaceMemberSpec {
+                    path: PathBuf::from("plugins/firebase"),
+                    name: Some("Firebase".into()),
+                    codex: None,
+                },
+            ),
+        ]),
+    });
+    manifest.dependencies.insert(
+        "bundle".into(),
+        DependencySpec {
+            github: Some("acme/bundle".into()),
+            url: None,
+            path: None,
+            tag: Some("v1.0.0".into()),
+            branch: None,
+            revision: None,
+            version: None,
+            components: None,
+            members: Some(vec!["firebase".into(), "axiom".into()]),
+            managed: None,
+            enabled: true,
+        },
+    );
+
+    let encoded = serialize_manifest(&manifest).unwrap();
+
+    assert!(encoded.contains("[workspace]"));
+    assert!(encoded.contains("members = [\"plugins/axiom\", \"plugins/firebase\"]"));
+    assert!(encoded.contains("[workspace.package.axiom]"));
+    assert!(encoded.contains("[workspace.package.axiom.codex]"));
+    assert!(encoded.contains("bundle = { github = \"acme/bundle\", tag = \"v1.0.0\", members = [\"axiom\", \"firebase\"] }"));
 }
 
 #[test]
@@ -1189,6 +1353,7 @@ fn serializes_managed_dependencies_as_expanded_tables() {
             revision: None,
             version: None,
             components: None,
+            members: None,
             managed: Some(vec![
                 ManagedPathSpec {
                     source: PathBuf::from("prompts/review.md"),
@@ -1254,6 +1419,7 @@ fn serializes_dev_dependencies() {
             revision: None,
             version: None,
             components: Some(vec![DependencyComponent::Skills]),
+            members: None,
             managed: None,
             enabled: true,
         },
@@ -1418,6 +1584,7 @@ fn rejects_dependencies_with_multiple_git_sources() {
         revision: None,
         version: None,
         components: None,
+        members: None,
         managed: None,
         enabled: true,
     };

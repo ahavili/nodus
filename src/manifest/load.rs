@@ -223,6 +223,39 @@ pub fn serialize_manifest(manifest: &Manifest) -> Result<String> {
         ));
     }
 
+    if let Some(workspace) = &manifest.workspace {
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str("[workspace]\n");
+        let encoded = workspace
+            .members
+            .iter()
+            .map(|path| quote(&display_path(path)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        output.push_str(&format!("members = [{encoded}]\n"));
+
+        for (id, member) in &workspace.package {
+            output.push('\n');
+            output.push_str(&format!("[workspace.package.{id}]\n"));
+            output.push_str(&format!("path = {}\n", quote(&display_path(&member.path))));
+            if let Some(name) = &member.name {
+                output.push_str(&format!("name = {}\n", quote(name)));
+            }
+            if let Some(codex) = &member.codex {
+                output.push('\n');
+                output.push_str(&format!("[workspace.package.{id}.codex]\n"));
+                output.push_str(&format!("category = {}\n", quote(&codex.category)));
+                output.push_str(&format!("installation = {}\n", quote(&codex.installation)));
+                output.push_str(&format!(
+                    "authentication = {}\n",
+                    quote(&codex.authentication)
+                ));
+            }
+        }
+    }
+
     append_dependency_section(&mut output, manifest, DependencyKind::Dependency);
     append_dependency_section(&mut output, manifest, DependencyKind::DevDependency);
 
