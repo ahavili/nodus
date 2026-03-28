@@ -31,7 +31,10 @@ pub(super) struct Cli {
 pub(super) enum Command {
     #[command(about = "Add a dependency and run sync")]
     Add {
-        #[arg(help = "Git URL, local path, or GitHub shortcut like owner/repo")]
+        #[arg(
+            value_name = "PACKAGE",
+            help = "Git URL, local path, or GitHub shortcut like owner/repo"
+        )]
         url: String,
         #[arg(
             long,

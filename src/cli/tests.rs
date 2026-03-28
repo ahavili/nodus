@@ -478,6 +478,7 @@ fn add_help_describes_arguments() {
         .render_long_help()
         .to_string();
 
+    assert!(help.contains("<PACKAGE>"));
     assert!(help.contains("Git URL, local path, or GitHub shortcut like owner/repo"));
     assert!(help.contains("Record the dependency under `[dev-dependencies]`"));
     assert!(help.contains("Pin a specific Git tag instead of resolving the latest tag"));
