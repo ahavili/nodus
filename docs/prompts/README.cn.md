@@ -133,20 +133,19 @@ git ls-remote <仓库地址> HEAD
 对普通用户，优先走最简单路径：
 
 1. 如果用户只是想“先装好、先能用、最好一站式做完”，并且没有明确指定别的包，默认安装 `nodus-rs/nodus`
-2. 对这类小白用户，默认优先考虑**全局安装**
-3. 只有当用户明确说“装到当前仓库里”或明确要当前仓库可复现时，才改用当前项目安装
+2. 对这类小白用户，默认优先考虑**当前仓库安装**
+3. 只有当用户明确说想装成跨项目可用的用户级环境时，才改用全局安装
 
 推荐默认路径：
 
-```bash
-nodus add nodus-rs/nodus --global
-```
-
-如果用户明确要按当前仓库管理，再使用：
-
-```bash
 nodus add nodus-rs/nodus --adapter <adapter>
 nodus doctor
+```
+
+如果用户明确要用户级全局安装，再使用：
+
+```bash
+nodus add nodus-rs/nodus --global --adapter <adapter>
 ```
 
 ### 常用命令
@@ -169,10 +168,10 @@ nodus add ./vendor/agent-package --adapter <adapter>
 nodus add nodus-rs/nodus --adapter <adapter>
 ```
 
-如果用户没有强调“当前仓库”，而是想一站式直接可用，优先给：
+如果用户明确要用户级全局安装，再使用：
 
 ```bash
-nodus add nodus-rs/nodus --global
+nodus add nodus-rs/nodus --global --adapter <adapter>
 ```
 
 ### 可选安装方式
@@ -437,19 +436,19 @@ nodus add owner/repo --global --adapter codex
 nodus remove nodus --global
 ```
 
-对这个文档面对的小白用户，如果他只是想“先用起来”、又没有明确要求项目级安装，默认优先推荐：
+只有当用户明确想装成“所有项目都可直接使用”的用户级环境时，才优先给：
 
 ```bash
 nodus add nodus-rs/nodus --global --adapter codex
 ```
 
-只有当用户明确要：
+以下这些目标都应该继续优先推荐项目级默认：
 
 - 当前仓库可复现
 - 团队成员也跟着同一个仓库配置走
-- 或者要安装的并不是 `nodus-rs/nodus`
+- 或者就是标准的按仓库管理流程
 
-才默认改为当前仓库处理，而不是全局安装。
+这些情况下都不应该把全局安装当成默认推荐。
 
 ---
 
@@ -719,9 +718,9 @@ nodus relay dep-a dep-b
 1. 先检查仓库角色和用户意图，再给命令。
 2. 能推断的就推断，推断不了再问最少的问题。
 3. 对普通用户，默认：
-   - 如果只是想一站式先用起来，默认 `nodus add nodus-rs/nodus --global --adapter <adapter>`
+   - 如果只是想一站式先用起来，默认 `nodus add nodus-rs/nodus --adapter <adapter>`
    - 单一 adapter
-   - 只有在明确要求项目级管理时，才默认 `nodus add <package> --adapter <adapter>`
+   - 只有在明确要求用户级全局安装时，才默认 `nodus add <package> --global --adapter <adapter>`
    - 项目级安装完成后，最后跑 `nodus doctor`
 4. 不要让用户手工复制受管理文件。
 5. 不要把 `nodus.toml`、`nodus.lock`、adapter 输出目录的角色说反。

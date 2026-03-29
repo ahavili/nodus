@@ -1,11 +1,11 @@
 ---
 name: nodus-troubleshooting
-description: Use when nodus add, sync, doctor, update, or relay is failing and you need a structured debugging workflow based on manifest state, lock state, package discovery, and managed outputs.
+description: Use when nodus add, sync, doctor, update, or relay is failing and you need a structured debugging workflow based on workspace state, lock state, package discovery, and managed outputs.
 ---
 
 # Nodus Troubleshooting
 
-Debug Nodus failures from first principles: manifest parse state, dependency resolution, lock state, discovery results, managed outputs, and relay state.
+Debug Nodus failures from first principles: workspace state, dependency resolution, lock state, discovery results, managed outputs, and relay state.
 
 ## Workflow
 

@@ -133,20 +133,20 @@ Common user phrasing:
 For ordinary users, prefer the simplest path:
 
 1. If the user only wants to "get it working" and "finish everything in one go", and did not clearly request a different package, default to installing `nodus-rs/nodus`
-2. For beginner users like this, prefer a **global install** by default
-3. Only switch to a project-scoped install when the user explicitly says "install it into this repo" or clearly needs the current repository to stay reproducible
+2. For beginner users like this, prefer a **project-scoped install** by default
+3. Only switch to a global install when the user explicitly says they want a home-scoped setup across projects
 
 Recommended default path:
 
 ```bash
-nodus add nodus-rs/nodus --global
-```
-
-If the user explicitly wants repository-scoped management instead:
-
-```bash
 nodus add nodus-rs/nodus --adapter <adapter>
 nodus doctor
+```
+
+If the user explicitly wants a home-scoped install instead:
+
+```bash
+nodus add nodus-rs/nodus --global --adapter <adapter>
 ```
 
 ### Common Commands
@@ -169,10 +169,10 @@ If the user specifically wants to add Nodus's own package into the current repo:
 nodus add nodus-rs/nodus --adapter <adapter>
 ```
 
-If the user did not emphasize "this repo" and just wants a one-stop setup, prefer:
+If the user explicitly wants a home-scoped install instead, use:
 
 ```bash
-nodus add nodus-rs/nodus --global
+nodus add nodus-rs/nodus --global --adapter <adapter>
 ```
 
 ### Optional Installation Modes
@@ -437,17 +437,17 @@ Remove a global install:
 nodus remove nodus --global
 ```
 
-For the beginner audience this document targets, if the user only wants to "start using it" and did not explicitly ask for a project-level install, prefer:
+Use a global install only when the user explicitly wants a home-scoped setup across projects:
 
 ```bash
 nodus add nodus-rs/nodus --global --adapter codex
 ```
 
-Only switch the default back to project-scoped handling when the user explicitly wants:
+Keep the default recommendation project-scoped when the user wants:
 
 - the current repository to remain reproducible
 - teammates to share the same repository configuration
-- or a package other than `nodus-rs/nodus`
+- or the normal per-repo Nodus workflow
 
 ---
 
@@ -717,9 +717,9 @@ nodus relay dep-a dep-b
 1. Check the repository role and the user's intent before giving commands.
 2. Infer what you can. Ask the fewest possible questions only when needed.
 3. For ordinary users, default to:
-   - `nodus add nodus-rs/nodus --global --adapter <adapter>` when they just want a one-stop setup
+   - `nodus add nodus-rs/nodus --adapter <adapter>` when they just want a one-stop setup
    - a single adapter
-   - `nodus add <package> --adapter <adapter>` only when they explicitly want project-scoped management
+   - `nodus add <package> --global --adapter <adapter>` only when they explicitly want a home-scoped install
    - `nodus doctor` after project-scoped installation
 4. Do not make users copy managed files by hand.
 5. Do not confuse the roles of `nodus.toml`, `nodus.lock`, and adapter output directories.

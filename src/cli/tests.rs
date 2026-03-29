@@ -500,7 +500,10 @@ fn root_help_describes_commands() {
         .render_long_help()
         .to_string();
 
-    assert!(help.contains("Nodus resolves agent packages from local paths and Git tags"));
+    assert!(help.contains("Nodus installs agent packages from GitHub, Git URLs, or local paths"));
+    assert!(help.contains("For most repos, the normal flow is:"));
+    assert!(help.contains("nodus add <package> --adapter <adapter>"));
+    assert!(help.contains("nodus doctor"));
     assert!(help.contains("Add a dependency and run sync"));
     assert!(help.contains("List configured dependencies and any locked metadata"));
     assert!(help.contains("Display resolved package metadata"));
@@ -516,6 +519,8 @@ fn root_help_describes_commands() {
         help.contains("Use an AI review agent to assess whether a package graph looks safe to use")
     );
     assert!(help.contains("Validate lockfile, shared store, and managed output consistency"));
+    assert!(help.contains("Project-scoped installs are the default"));
+    assert!(help.contains("Use `nodus <command> --help` for examples and flag details"));
 }
 
 #[test]
@@ -527,6 +532,7 @@ fn add_help_describes_arguments() {
         .render_long_help()
         .to_string();
 
+    assert!(help.contains("Add a package to the current repo and immediately sync"));
     assert!(help.contains("<PACKAGE>"));
     assert!(help.contains("Git URL, local path, or GitHub shortcut like owner/repo"));
     assert!(help.contains("Record the dependency under `[dev-dependencies]`"));
@@ -537,6 +543,9 @@ fn add_help_describes_arguments() {
     assert!(help.contains("Select one or more adapters to persist for this install target"));
     assert!(help.contains("Select which dependency components to install from the package"));
     assert!(help.contains("Persist project startup hooks"));
+    assert!(help.contains("By default Nodus installs the whole package"));
+    assert!(help.contains("nodus add nodus-rs/nodus --adapter codex"));
+    assert!(help.contains("After a project-scoped install, run `nodus doctor`"));
 }
 
 #[test]
@@ -565,8 +574,11 @@ fn sync_help_describes_force() {
         .render_long_help()
         .to_string();
 
+    assert!(help.contains("Resolve the dependencies already declared in `nodus.toml`"));
     assert!(help.contains("--force"));
     assert!(help.contains("Overwrite unmanaged files"));
+    assert!(help.contains("nodus sync --locked"));
+    assert!(help.contains("Use `--locked` when the lockfile must stay unchanged"));
 }
 
 #[test]
@@ -600,6 +612,48 @@ fn read_only_help_mentions_json() {
             "{name} help missing JSON description"
         );
     }
+}
+
+#[test]
+fn doctor_help_describes_when_to_run_it() {
+    let mut root = <Cli as clap::CommandFactory>::command();
+    let help = root
+        .find_subcommand_mut("doctor")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("Validate that `nodus.toml`, `nodus.lock`, the shared store"));
+    assert!(help.contains("Run this after `nodus add`, `nodus sync`, `nodus update`, or `nodus remove`"));
+    assert!(help.contains("nodus doctor --json"));
+}
+
+#[test]
+fn info_help_describes_read_only_inspection_flow() {
+    let mut root = <Cli as clap::CommandFactory>::command();
+    let help = root
+        .find_subcommand_mut("info")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("Inspect a package without changing the current repo"));
+    assert!(help.contains("Use this when you want to see discovered skills"));
+    assert!(help.contains("nodus info ./vendor/playbook"));
+}
+
+#[test]
+fn update_help_distinguishes_itself_from_sync() {
+    let mut root = <Cli as clap::CommandFactory>::command();
+    let help = root
+        .find_subcommand_mut("update")
+        .unwrap()
+        .render_long_help()
+        .to_string();
+
+    assert!(help.contains("Resolve newer allowed versions for configured dependencies"));
+    assert!(help.contains("Use `nodus update` when you want newer package revisions"));
+    assert!(help.contains("Use `nodus sync` when you only want to rebuild"));
 }
 
 #[test]

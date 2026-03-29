@@ -7,8 +7,8 @@
 <p align="center"><strong>Add agent packages to your repo with one command.</strong></p>
 
 <p align="center">
-  Install skills, agents, rules, and commands from GitHub or a local path,
-  lock the exact version, and write the runtime files your repo actually uses.
+  Nodus installs agent packages from GitHub, Git URLs, or local paths, locks the exact revision,
+  and writes only the adapter runtime files your repo actually uses.
 </p>
 
 <p align="center">
@@ -18,37 +18,30 @@
 <p align="center">
   <a href="#install">Install</a> •
   <a href="#quick-start">Quick Start</a> •
-  <a href="#common-tasks">Common Tasks</a> •
-  <a href="#advanced">Advanced</a> •
-  <a href="#manifest">Manifest</a> •
+  <a href="#cli-help">CLI Help</a> •
+  <a href="#for-ai-assistants">For AI Assistants</a> •
+  <a href="#learn-more">Learn More</a> •
   <a href="./CONTRIBUTING.md">Contributing</a>
 </p>
 
 ## What Is Nodus?
 
-Nodus is a package manager for repo-scoped AI tooling.
+Nodus is a package manager for repo-scoped agent tooling.
 
-If a package publishes content under folders like `skills/`, `agents/`, `rules/`, or `commands/`, Nodus can:
+If a package publishes content such as `skills/`, `agents/`, `rules/`, or `commands/`, Nodus can:
 
 - add it from GitHub, Git, or a local path
-- pin what you asked for in `nodus.toml`
+- record what you asked for in `nodus.toml`
 - lock the exact resolved revision in `nodus.lock`
-- write managed files into `.codex/`, `.claude/`, `.cursor/`, `.agents/`, `.github/`, or `.opencode/`
+- write managed files into adapter roots such as `.codex/`, `.claude/`, `.cursor/`, `.github/`, `.agents/`, or `.opencode/`
 - prune stale generated files without touching unmanaged ones
 
-For most users, the main command is:
+For most teams, the normal flow is:
 
 ```bash
-nodus add <package>
+nodus add <package> --adapter <adapter>
+nodus doctor
 ```
-
-If you want your agent to learn how to use Nodus automatically inside this repo, start with:
-
-```bash
-nodus add nodus-rs/nodus
-```
-
-That installs Nodus's own package into the repo so the agent can pick up the managed skills and instructions it publishes. If this is a brand-new repo and Nodus cannot infer your tool yet, add an adapter on the first run, for example `--adapter <adapter>`.
 
 ## Install
 
@@ -79,11 +72,10 @@ irm https://nodus.elata.ai/install.ps1 | iex
 <details>
 <summary>Windows install command failed?</summary>
 
-If the command fails (for example, `pwsh` is not recognized), install PowerShell 7, restart your terminal, then run with `pwsh`:
+If the command fails, install PowerShell 7, restart your terminal, then run:
 
 ```powershell
 winget install --id Microsoft.PowerShell --source winget
-# Restart terminal first so `pwsh` is available on PATH.
 pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 ```
 
@@ -91,400 +83,69 @@ pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 
 ## Quick Start
 
-If you want the agent in this repo to learn Nodus first, run:
+Install a package into the current repo and verify the result:
 
 ```bash
-nodus add nodus-rs/nodus
+nodus add nodus-rs/nodus --adapter codex
+nodus doctor
 ```
 
-That one command:
+That flow:
 
-- creates `nodus.toml` if your repo does not have one yet
+- creates `nodus.toml` if the repo does not have one yet
 - records the dependency in `nodus.toml`
-- resolves the latest tag by default
-- locks the exact resolved revision in `nodus.lock`
-- writes managed runtime files for the detected or configured adapter
+- resolves and locks the exact revision in `nodus.lock`
+- writes the managed runtime files for the selected or detected adapter
 
-If your repo does not already expose adapter signals such as `.codex/`, `.claude/`, or `.github/skills`, make the first install explicit:
-
-```bash
-nodus add nodus-rs/nodus --adapter <adapter>
-```
-
-Validate the result:
+If you want a user-level install instead of repo-scoped state, use `--global` explicitly:
 
 ```bash
-nodus doctor
+nodus add nodus-rs/nodus --global --adapter codex
 ```
 
-Typical output files look like this:
+## CLI Help
 
-```text
-.codex/skills/<skill-id>_<source-id>/
-.claude/skills/<skill-id>_<source-id>/
-.github/skills/<skill-id>_<source-id>/
-.github/agents/<agent-id>_<source-id>.agent.md
-.cursor/rules/<rule-id>_<source-id>.mdc
-```
+`nodus --help` is the main command guide.
 
-## `nodus add`
-
-Add from GitHub:
+Start there when you want to learn the workflow, then open command-specific help as needed:
 
 ```bash
-nodus add owner/repo --adapter <adapter>
+nodus --help
+nodus add --help
+nodus sync --help
+nodus doctor --help
 ```
 
-Add from a local path:
+Commands most users need:
 
-```bash
-nodus add ./vendor/playbook --adapter <adapter>
-```
+- `nodus add <package> --adapter <adapter>` to install a package into the current repo
+- `nodus info <package-or-alias>` to inspect a package before or after install
+- `nodus sync` to rebuild managed outputs from the versions already recorded
+- `nodus update` to move dependencies to newer allowed revisions
+- `nodus remove <alias>` to remove a dependency and prune what it owned
+- `nodus doctor` to check that the repo, lockfile, shared store, and managed outputs still agree
 
-Pin a tag, branch, commit, or semver range:
+## For AI Assistants
 
-```bash
-nodus add owner/repo --tag v1.2.3
-nodus add owner/repo --branch main
-nodus add owner/repo --revision 0123456789abcdef
-nodus add owner/repo --version '^1.2.0'
-```
+If you want an AI assistant to operate Nodus for you, use the dedicated assistant docs:
 
-Install only part of a package:
+- [docs/prompts/README.md](./docs/prompts/README.md)
 
-```bash
-nodus add owner/repo --adapter <adapter> --component skills
-nodus add owner/repo --adapter <adapter> --component skills --component rules
-```
+Those docs explain how an assistant should identify the repo role, choose adapters, prefer safe defaults, and finish with `nodus doctor`.
 
-Add a dev-only dependency:
+## Learn More
 
-```bash
-nodus add owner/repo --dev --adapter <adapter>
-```
+- Docs: <https://nodus.elata.ai/docs/>
+- Install guide: <https://nodus.elata.ai/install/>
+- Package command generator: <https://nodus.elata.ai/packages/>
+- Example manifest: [examples/nodus.toml](./examples/nodus.toml)
 
-Start tools with automatic sync:
-
-```bash
-nodus add owner/repo --adapter <adapter> --sync-on-launch
-```
-
-Install globally into all detected supported home-scoped agent roots:
-
-```bash
-nodus add owner/repo --global
-```
-
-Install globally into an explicit home-scoped agent root:
-
-```bash
-nodus add owner/repo --global --adapter <adapter>
-```
-
-Preview changes without writing them:
-
-```bash
-nodus add owner/repo --adapter <adapter> --dry-run
-```
-
-## Common Tasks
-
-Inspect a package without changing your repo:
-
-```bash
-nodus info owner/repo
-nodus info ./vendor/playbook
-nodus info installed_alias
-```
-
-See what can be updated:
-
-```bash
-nodus outdated
-```
-
-Update dependencies and rewrite managed files:
-
-```bash
-nodus update
-```
-
-Rebuild managed files from what is already recorded:
-
-```bash
-nodus sync
-```
-
-Overwrite an unmanaged path when this sync is about to manage it:
-
-```bash
-nodus sync --force
-```
-
-Use these in CI:
-
-```bash
-nodus sync --locked
-nodus sync --frozen
-```
-
-Remove a dependency:
-
-```bash
-nodus remove nodus
-```
-
-Remove a global dependency:
-
-```bash
-nodus remove nodus --global
-```
-
-Check that your manifest, lockfile, store, and managed files are consistent:
-
-```bash
-nodus doctor
-```
-
-Generate shell completions:
-
-```bash
-nodus completion bash
-nodus completion zsh
-nodus completion fish
-```
-
-## Advanced
-
-Supported platforms:
-
-- macOS (`x86_64`, `arm64`)
-- Linux (`x86_64`, `arm64`/`aarch64`)
-- Windows (`x86_64`, `arm64`)
-
-By default, Nodus stores shared mirrors, checkouts, and snapshots here:
-
-```text
-macOS:   ~/Library/Application Support/nodus/
-Linux:   ~/.local/state/nodus/              (or $XDG_STATE_HOME/nodus/)
-Windows: %LOCALAPPDATA%\nodus\
-```
-
-Override that location for any command with `--store-path <path>`.
-
-Global installs keep their `nodus.toml` and `nodus.lock` under `<store-path>/global/` and
-write managed runtime files into your home-scoped agent folders such as `~/.codex`,
-`~/.claude`, `~/.cursor`, `~/.opencode`, and `~/.agents`.
-
-Global installs support these adapters:
-
-- `agents`
-- `claude`
-- `codex`
-- `cursor`
-- `opencode`
-
-Global installs do not support `copilot`, and `--global` cannot be combined with
-`--sync-on-launch`.
-
-Install a specific release with the Unix installer script:
-
-```bash
-curl -fsSL https://nodus.elata.ai/install.sh | bash -s -- --version v0.1.0
-```
-
-Install a specific release on Windows:
-
-```powershell
-$env:NODUS_VERSION='v0.1.0'; irm https://nodus.elata.ai/install.ps1 | iex
-```
-
-If this command fails on Windows, install PowerShell 7, restart your terminal, then run through `pwsh`:
-
-```powershell
-$env:NODUS_VERSION='v0.1.0'
-pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
-```
-
-## When To Use `sync` vs `update`
-
-Use `nodus sync` when you want Nodus to make the repo match your current manifest and lockfile.
-
-Use `nodus sync --force` when you want that sync to overwrite unmanaged files at paths Nodus is about to manage.
-
-Use `nodus update` when you want Nodus to look for newer allowed versions first, then sync to those newer results.
-
-Use `nodus sync --locked` in CI when the lockfile must not change.
-
-Use `nodus sync --frozen` when installs must use the exact revisions already recorded in `nodus.lock`.
-
-## Adapters
-
-Nodus writes outputs only for the adapters your repo uses.
-
-Supported adapters today:
-
-- `agents`
-- `claude`
-- `codex`
-- `copilot`
-- `cursor`
-- `opencode`
-
-You can choose adapters explicitly with `--adapter`, persist them in `nodus.toml`, or let Nodus detect them from existing repo roots such as `.codex/`, `.claude/`, or `.github/skills`.
-
-`copilot` manages GitHub Copilot project assets under `.github/skills/` and `.github/agents/`. In v1 it supports skills and custom agents only; rules and commands are not emitted for Copilot.
-
-## Manifest
-
-The smallest useful consumer manifest looks like this:
-
-```toml
-[adapters]
-enabled = ["codex"]
-
-[dependencies]
-nodus = { github = "nodus-rs/nodus", tag = "v0.3.2" }
-```
-
-Common dependency forms:
-
-```toml
-[dependencies]
-playbook = { path = "vendor/playbook" }
-tooling = { github = "owner/tooling", version = "^1.2.0" }
-shared = { github = "owner/shared", tag = "v1.4.0", components = ["skills"] }
-paused = { github = "owner/paused", tag = "v1.0.0", enabled = false }
-
-[dev-dependencies]
-internal = { path = "vendor/internal" }
-```
-
-Set `enabled = false` to keep a dependency declared in `nodus.toml` without resolving it, syncing its managed outputs, or tracking it in `nodus.lock`.
-
-Package authors can now declare managed exports in the package itself:
-
-```toml
-[[managed_exports]]
-source = "learnings"
-target = "learnings"
-
-[[managed_exports]]
-source = "prompts/review.md"
-target = "docs/review.md"
-placement = "project"
-```
-
-`placement = "package"` is the default and writes under `.nodus/packages/<package-name>/...`.
-`placement = "project"` writes under the consumer repo root.
-
-Legacy root-manifest overrides are still supported for direct dependencies, but they are no longer the preferred authoring model:
-
-```toml
-[dependencies.shared]
-path = "vendor/shared"
-
-[[dependencies.shared.managed]]
-source = "prompts/review.md"
-target = ".github/prompts/review.md"
-```
-
-For a fuller example, see [examples/nodus.toml](./examples/nodus.toml).
-
-## Package Layout
-
-Nodus discovers package content from these conventional paths:
-
-- `skills/<id>/SKILL.md`
-- `agents/<id>.md`
-- `rules/<id>.*`
-- `commands/<id>.md`
-
-Packages can also declare:
-
-- `content_roots` to publish additional folders
-- `publish_root = true` to emit the root package itself
-- `managed_exports` to publish package-owned managed files or directories
-- `capabilities` for privileged behavior such as high-sensitivity actions
-
-Single-package repos keep using the package layout above. Multi-plugin repos can
-now use an explicit workspace root in `nodus.toml`:
-
-```toml
-[workspace]
-members = ["plugins/axiom", "plugins/firebase"]
-
-[workspace.package.axiom]
-path = "plugins/axiom"
-name = "Axiom"
-
-[workspace.package.axiom.codex]
-category = "Productivity"
-installation = "AVAILABLE"
-authentication = "ON_INSTALL"
-
-[workspace.package.firebase]
-path = "plugins/firebase"
-name = "Firebase"
-
-[workspace.package.firebase.codex]
-category = "Productivity"
-installation = "AVAILABLE"
-authentication = "ON_INSTALL"
-```
-
-Workspace rules:
-
-- the workspace root is a thin wrapper package, not a merged package
-- root-level `skills/`, `agents/`, `rules/`, and `commands/` are not allowed in a workspace root
-- each workspace member is a normal Nodus package rooted at its configured path
-- `nodus sync` for a workspace root emits native marketplace files for Claude and Codex
-- existing `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json` wrapper repos are still supported for backward compatibility
-
-When you consume a workspace dependency, member selection is explicit:
-
-```toml
-[dependencies]
-acme = { github = "org/acme-marketplace", tag = "v1.2.3", members = ["axiom", "firebase"] }
-```
-
-Selection semantics:
-
-- `members = [...]` enables only the listed workspace members
-- if `members` is omitted, no workspace members are enabled
-- `nodus add <workspace-repo>` writes all available members explicitly into `members = [...]`
-- `nodus add --dry-run` previews the generated dependency entry and each member's enabled status
-
-If a package declares `high` sensitivity capabilities, install or update with:
-
-```bash
-nodus sync --allow-high-sensitivity
-nodus update --allow-high-sensitivity
-```
-
-## Relay
-
-`nodus relay` is for package maintainers who edit generated runtime files in a consumer repo and want to copy those edits back into the source checkout.
-
-```bash
-nodus relay nodus --repo-path ../nodus
-nodus relay nodus --watch
-```
-
-This is an advanced workflow. Most users only need `add`, `info`, `outdated`, `update`, `sync`, `remove`, and `doctor`.
-
-## Why Teams Use Nodus
-
-- one command to add repo-scoped AI tooling
-- exact revisions locked in `nodus.lock`
-- generated files stay managed and pruneable
-- unmanaged files are protected unless you explicitly run `nodus sync --force`
-- mirrors, checkouts, and snapshots are shared across repos
+For package authoring details, workspace packaging, managed exports, or relay workflows, prefer the website docs and `nodus --help` over treating this README as the full command reference.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for local development and release checks.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for local development and release checks.
 
 ## License
 
-Licensed under [Apache-2.0](LICENSE).
+Licensed under [Apache-2.0](./LICENSE).

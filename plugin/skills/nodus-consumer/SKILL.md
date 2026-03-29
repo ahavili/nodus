@@ -29,8 +29,8 @@ Assume some users may have little or no coding background. In those cases, optim
    - Default to the full package unless the user clearly needs only `skills`, `agents`, `rules`, or `commands`.
    - If the user does not know which components they need, omit `components`.
    - If the user is a beginner who just wants a one-stop setup and does not name another package, prefer `nodus-rs/nodus`.
-   - In that beginner one-stop case, prefer `--global` by default.
-   - Switch back to a project-scoped install only when the user explicitly wants the current repo managed or clearly needs repo-level reproducibility.
+   - In that beginner one-stop case, prefer a project-scoped install by default.
+   - Switch to `--global` only when the user explicitly wants a home-scoped setup.
 5. Let Nodus manage runtime outputs.
    - Use `nodus add`, `nodus sync`, `nodus update`, `nodus remove`, and `nodus doctor`.
    - Do not manually copy files into `.agents/`, `.claude/`, `.codex/`, `.cursor/`, or `.opencode/`.
@@ -47,7 +47,6 @@ Assume some users may have little or no coding background. In those cases, optim
 ## Common Commands
 
 ```bash
-nodus add nodus-rs/nodus --global --adapter codex
 nodus add <package> --adapter <adapter>
 nodus add <package> --adapter <adapter> --component skills --component rules
 nodus info <package-or-alias>
