@@ -83,11 +83,11 @@ pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 
 ## 给 AI 助手
 
-如果你希望把 Nodus 的使用流程直接交给 AI 助手，可以把公开文档链接发给它：
+如果你希望把 Nodus 的使用流程直接交给 AI 助手，可以把可直接抓取的提示词链接发给它：
 
-- <https://nodus.elata.ai/zh-cn/docs/>
+- <https://nodus.elata.ai/zh-cn/prompts/README.md>
 
-这套公开文档会给助手一个可直接访问的安装与加包流程，帮助它生成合适的 `nodus add` 命令，并最终用 `nodus doctor` 做验证。
+这份提示词会给助手更具体的 Nodus 操作说明，帮助它生成合适的 `nodus add` 命令，并最终用 `nodus doctor` 做验证。
 
 ## 快速开始
 

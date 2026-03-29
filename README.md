@@ -83,11 +83,11 @@ pwsh -NoProfile -Command "irm https://nodus.elata.ai/install.ps1 | iex"
 
 ## For AI Assistants
 
-If you want an AI assistant to operate Nodus for you, give it the public docs link:
+If you want an AI assistant to operate Nodus for you, give it the fetchable prompt URL:
 
-- <https://nodus.elata.ai/docs/>
+- <https://nodus.elata.ai/prompts/README.md>
 
-That docs flow gives the assistant a public guide for the install and package workflow, helps it choose the right `nodus add` command, and still ends with `nodus doctor`.
+That prompt gives the assistant concrete Nodus operating instructions, helps it choose the right `nodus add` command, and still ends with `nodus doctor`.
 
 ## Quick Start
 
